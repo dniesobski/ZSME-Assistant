@@ -1,0 +1,11 @@
+<resources>
+    <string name="app_name">ZSME Plan</string>
+    <string name="nav_substitutions">Zastępstwa</string>
+    <string name="nav_timetable">Plan lekcji</string>
+    <string name="nav_messenger">Komunikator</string>
+    <string name="nav_settings">Ustawienia</string>
+    <string name="notification_channel_name">Zastępstwa i zmiany planu</string>
+    <string name="notification_channel_desc">Powiadomienia o nowych zastępstwach z sekretariat.zsme.pl oraz zmianach na plan.zsme.pl dla Twojej klasy i grupy</string>
+    <string name="mesh_notification_channel_name">Komunikator szkolny BLE</string>
+    <string name="mesh_notification_channel_desc">Powiadomienia o nowych wiadomościach w sieci kratowej Bluetooth</string>
+</resources>
