@@ -1,9 +1,12 @@
-name: Budowanie APK dla Androida
+name: Budowanie i publikacja APK
 
 on:
   push:
     branches: [ "main", "master" ]
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -24,11 +27,23 @@ jobs:
         with:
           gradle-version: '9.3.1'
 
-      - name: Budowanie pliku APK (Debug)
-        run: gradle assembleDebug
+      - name: Automatyczne znalezienie projektu, wygenerowanie klucza i budowanie APK
+        run: |
+          PROJECT_FILE=$(find . -maxdepth 3 \( -name "settings.gradle" -o -name "settings.gradle.kts" \) | head -n 1)
+          PROJECT_DIR=$(dirname "$PROJECT_FILE")
+          cd "$PROJECT_DIR"
+          
+          # Tworzy brakujący plik debug.keystore, jeśli nie ma go w repozytorium
+          if [ ! -f "debug.keystore" ]; then
+            keytool -genkey -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+          fi
 
-      - name: Udostępnienie gotowego pliku APK do pobrania
-        uses: actions/upload-artifact@v4
+          gradle assembleDebug
+          cp app/build/outputs/apk/debug/app-debug.apk "$GITHUB_WORKSPACE/ZSMEAssist.apk"
+
+      - name: Publikacja najnowszego APK w GitHub Releases
+        uses: softprops/action-gh-release@v2
         with:
-          name: ZSMEAssist-APK
-          path: NAZWA_PODFOLDERU/app/build/outputs/apk/debug/app-debug.apk
+          tag_name: v1.0.${{ github.run_number }}
+          name: Aktualizacja #${{ github.run_number }}
+          files: ZSMEAssist.apk
