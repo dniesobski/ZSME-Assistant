@@ -1,4 +1,4 @@
-name: Budowanie i publikacja APK
+name: Budowanie i publikacja Release APK
 
 on:
   push:
@@ -27,19 +27,22 @@ jobs:
         with:
           gradle-version: '9.3.1'
 
-      - name: Automatyczne znalezienie projektu, wygenerowanie klucza i budowanie APK
+      - name: Odtworzenie klucza .jks i budowanie Release APK
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
           PROJECT_FILE=$(find . -maxdepth 3 \( -name "settings.gradle" -o -name "settings.gradle.kts" \) | head -n 1)
           PROJECT_DIR=$(dirname "$PROJECT_FILE")
           cd "$PROJECT_DIR"
-          
-          # Tworzy brakujący plik debug.keystore, jeśli nie ma go w repozytorium
-          if [ ! -f "debug.keystore" ]; then
-            keytool -genkey -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
-          fi
 
-          gradle assembleDebug -PappVersionName=v1.0.${{ github.run_number }} -PappVersionCode=${{ github.run_number }}
-          cp app/build/outputs/apk/debug/app-debug.apk "$GITHUB_WORKSPACE/ZSMEAssist.apk"
+          # Odtwarza Twój plik klucza .jks w głównym folderze projektu
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 --decode > klucz_zsme.jks
+
+          # Buduje podpisaną wersję produkcyjną (Release)
+          gradle assembleRelease
+          cp app/build/outputs/apk/release/app-release.apk "$GITHUB_WORKSPACE/ZSMEAssist.apk"
 
       - name: Publikacja najnowszego APK w GitHub Releases
         uses: softprops/action-gh-release@v2
