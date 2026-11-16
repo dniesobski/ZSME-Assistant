@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">ZSME Plan</string>
+    <string name="app_name">ZSME Assistant</string>
     <string name="nav_home">Główna</string>
     <string name="nav_substitutions">Zastępstwa</string>
     <string name="nav_timetable">Plan lekcji</string>
