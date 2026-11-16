@@ -118,8 +118,9 @@ class PreferencesRepository(private val context: Context) {
             lastApkLastModified = prefs[Keys.LAST_APK_LAST_MODIFIED].orEmpty(),
             lastApkETag = prefs[Keys.LAST_APK_ETAG].orEmpty(),
             lastApkContentLength = prefs[Keys.LAST_APK_CONTENT_LENGTH] ?: 0L,
-            appUpdateUrl = prefs[Keys.APP_UPDATE_URL]?.takeIf { it.isNotBlank() }
-                ?: UserPreferences.DEFAULT_GITHUB_APK_URL,
+            appUpdateUrl = prefs[Keys.APP_UPDATE_URL]
+                ?.takeIf { it.isNotBlank() && !it.equals(UserPreferences.LEGACY_GITHUB_V106_URL, ignoreCase = true) }
+                ?: UserPreferences.DEFAULT_GITHUB_RELEASES_URL,
             additionalSchools = extraSchools
         )
     }
@@ -306,7 +307,7 @@ class PreferencesRepository(private val context: Context) {
         context.dataStore.edit { prefs ->
             prefs[Keys.APP_UPDATE_URL] = normalizeHttpUrl(
                 url,
-                UserPreferences.DEFAULT_GITHUB_APK_URL
+                UserPreferences.DEFAULT_GITHUB_RELEASES_URL
             )
         }
     }

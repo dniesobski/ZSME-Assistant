@@ -1,10 +1,16 @@
 package com.example
 
+import android.content.Context
 import android.content.Intent
+import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Row
@@ -16,15 +22,20 @@ import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CalendarViewWeek
+import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Hub
 import androidx.compose.material.icons.filled.NotificationsActive
+import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.outlined.CalendarViewWeek
+import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.Hub
 import androidx.compose.material.icons.outlined.NotificationsActive
 import androidx.compose.material.icons.outlined.Tune
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
+import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
@@ -35,6 +46,8 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -44,9 +57,12 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.core.content.FileProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavDestination.Companion.hasRoute
@@ -66,12 +82,14 @@ import com.example.ui.ZsmeViewModel
 import com.example.ui.components.ClassPickerDialog
 import com.example.ui.components.TeacherProfileDialog
 import com.example.ui.navigation.ZsmeRoute
+import com.example.ui.screens.HomeScreen
 import com.example.ui.screens.MessengerScreen
 import com.example.ui.screens.PortalWebViewScreen
 import com.example.ui.screens.SettingsScreen
 import com.example.ui.screens.SubstitutionsScreen
 import com.example.ui.screens.TimetableScreen
 import com.example.ui.theme.ZsmePlanTheme
+import java.io.File
 
 class MainActivity : ComponentActivity() {
 
@@ -153,6 +171,47 @@ fun ZsmeAppShell(
     val currentDestination = backStackEntry?.destination
     val snackbarHostState = remember { SnackbarHostState() }
 
+    val context = LocalContext.current
+
+    val unknownSourcesLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) {
+        val pendingPath = uiState.appUpdateState.pendingInstallApkPath
+        if (!pendingPath.isNullOrBlank()) {
+            val file = File(pendingPath)
+            val canInstall = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.packageManager.canRequestPackageInstalls()
+            } else {
+                true
+            }
+            if (canInstall && file.exists()) {
+                launchApkInstaller(context, file)
+                viewModel.consumePendingApkInstall()
+            }
+        }
+    }
+
+    LaunchedEffect(uiState.appUpdateState.pendingInstallApkPath) {
+        val apkPath = uiState.appUpdateState.pendingInstallApkPath ?: return@LaunchedEffect
+        val file = File(apkPath)
+        if (!file.exists()) {
+            viewModel.consumePendingApkInstall()
+            return@LaunchedEffect
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+            !context.packageManager.canRequestPackageInstalls()
+        ) {
+            val intent = Intent(
+                Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                Uri.parse("package:${context.packageName}")
+            )
+            unknownSourcesLauncher.launch(intent)
+        } else {
+            launchApkInstaller(context, file)
+            viewModel.consumePendingApkInstall()
+        }
+    }
+
     LaunchedEffect(uiState.snackbarMessage) {
         val msg = uiState.snackbarMessage
         if (!msg.isNullOrBlank()) {
@@ -163,6 +222,13 @@ fun ZsmeAppShell(
 
     val navItems = remember {
         listOf(
+            NavItem(
+                route = ZsmeRoute.Home,
+                labelRes = R.string.nav_home,
+                selectedIcon = Icons.Filled.Home,
+                unselectedIcon = Icons.Outlined.Home,
+                testTag = "nav_home"
+            ),
             NavItem(
                 route = ZsmeRoute.Substitutions,
                 labelRes = R.string.nav_substitutions,
@@ -218,12 +284,18 @@ fun ZsmeAppShell(
     }
 
     LaunchedEffect(deepLinkNonce, deepLinkRoute) {
-        if (deepLinkRoute == NotificationHelper.ROUTE_MESSENGER) {
-            if (!deepLinkMeshChannel.isNullOrBlank()) {
-                viewModel.selectMeshChannel(deepLinkMeshChannel)
+        when (deepLinkRoute) {
+            NotificationHelper.ROUTE_MESSENGER -> {
+                if (!deepLinkMeshChannel.isNullOrBlank()) {
+                    viewModel.selectMeshChannel(deepLinkMeshChannel)
+                }
+                navigateToTopLevel(ZsmeRoute.Messenger)
+                onConsumeDeepLink()
             }
-            navigateToTopLevel(ZsmeRoute.Messenger)
-            onConsumeDeepLink()
+            NotificationHelper.ROUTE_SETTINGS -> {
+                navigateToTopLevel(ZsmeRoute.Settings)
+                onConsumeDeepLink()
+            }
         }
     }
 
@@ -257,7 +329,7 @@ fun ZsmeAppShell(
                                         badgeCount = badge
                                     )
                                 },
-                                label = { Text(label, maxLines = 1) },
+                                label = { Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                                 modifier = Modifier.testTag(item.testTag)
                             )
                         }
@@ -304,9 +376,25 @@ fun ZsmeAppShell(
 
                 NavHost(
                     navController = navController,
-                    startDestination = ZsmeRoute.Substitutions,
+                    startDestination = ZsmeRoute.Home,
                     modifier = Modifier.weight(1f)
                 ) {
+                    composable<ZsmeRoute.Home> {
+                        HomeScreen(
+                            uiState = uiState,
+                            onRefresh = {
+                                viewModel.refreshTimetable(notifyOnChange = false)
+                                viewModel.refreshSubstitutions(notifyOnChange = false)
+                            },
+                            onOpenClassPicker = { viewModel.setClassPickerOpen(true) },
+                            onOpenTeacherSetup = { viewModel.setTeacherProfileDialogOpen(true) },
+                            onOpenTimetable = { navigateToTopLevel(ZsmeRoute.Timetable) },
+                            onOpenSubstitutions = { navigateToTopLevel(ZsmeRoute.Substitutions) },
+                            onStartAppUpdateDownload = viewModel::acceptStartupAppUpdate,
+                            onInstallDownloadedApk = viewModel::installDownloadedApk
+                        )
+                    }
+
                     composable<ZsmeRoute.Substitutions> {
                         SubstitutionsScreen(
                             uiState = uiState,
@@ -411,7 +499,6 @@ fun ZsmeAppShell(
                             onSaveAppUpdateUrl = viewModel::updateAppUpdateUrl,
                             onCheckAppUpdate = viewModel::checkForAppUpdate,
                             onInstallDownloadedApk = viewModel::installDownloadedApk,
-                            onConsumePendingApkInstall = viewModel::consumePendingApkInstall,
                             onOpenSekretariatWeb = {
                                 val subUrl = uiState.preferences.substitutionsUrl.ifBlank {
                                     UserPreferences.DEFAULT_SUBSTITUTIONS_URL
@@ -483,6 +570,71 @@ fun ZsmeAppShell(
                 onDismiss = { viewModel.setTeacherProfileDialogOpen(false) }
             )
         }
+
+        val startupCandidate = uiState.appUpdateState.checkResult?.candidate
+        if (uiState.appUpdateState.isStartupUpdateDialogVisible && startupCandidate != null) {
+            val verLabel = startupCandidate.versionName.takeIf { it.isNotBlank() }?.let { "v$it" }
+                ?: startupCandidate.fileName
+            AlertDialog(
+                onDismissRequest = viewModel::dismissStartupUpdateDialog,
+                icon = {
+                    Icon(
+                        imageVector = Icons.Filled.SystemUpdate,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                },
+                title = {
+                    Text(
+                        text = "Dostępna aktualizacja ($verLabel)",
+                        style = MaterialTheme.typography.titleLarge
+                    )
+                },
+                text = {
+                    val installedVer = uiState.appUpdateState.checkResult?.currentVersionName.orEmpty()
+                    Text(
+                        text = "Na GitHubie pojawiła się nowsza wersja aplikacji (${startupCandidate.fileName}). Zainstalowana wersja: $installedVer. Czy chcesz pobrać i zainstalować aktualizację teraz?",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                },
+                confirmButton = {
+                    Button(
+                        onClick = viewModel::acceptStartupAppUpdate,
+                        modifier = Modifier
+                            .minimumInteractiveComponentSize()
+                            .testTag("startup_update_confirm_button")
+                    ) {
+                        Text("Aktualizuj teraz")
+                    }
+                },
+                dismissButton = {
+                    TextButton(
+                        onClick = viewModel::dismissStartupUpdateDialog,
+                        modifier = Modifier
+                            .minimumInteractiveComponentSize()
+                            .testTag("startup_update_dismiss_button")
+                    ) {
+                        Text("Później")
+                    }
+                },
+                modifier = Modifier.testTag("startup_update_dialog")
+            )
+        }
+    }
+}
+
+private fun launchApkInstaller(context: Context, apkFile: File) {
+    val uri = FileProvider.getUriForFile(
+        context,
+        "${context.packageName}.fileprovider",
+        apkFile
+    )
+    val installIntent = Intent(Intent.ACTION_VIEW).apply {
+        setDataAndType(uri, "application/vnd.android.package-archive")
+        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    }
+    runCatching {
+        context.startActivity(installIntent)
     }
 }
 

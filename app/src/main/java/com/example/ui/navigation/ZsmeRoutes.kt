@@ -4,6 +4,9 @@ import kotlinx.serialization.Serializable
 
 sealed interface ZsmeRoute {
     @Serializable
+    data object Home : ZsmeRoute
+
+    @Serializable
     data object Substitutions : ZsmeRoute
 
     @Serializable

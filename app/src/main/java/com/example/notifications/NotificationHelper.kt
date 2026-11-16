@@ -23,10 +23,12 @@ object NotificationHelper {
     const val EXTRA_OPEN_ROUTE = "extra_open_route"
     const val EXTRA_MESH_CHANNEL = "extra_mesh_channel"
     const val ROUTE_MESSENGER = "messenger"
+    const val ROUTE_SETTINGS = "settings"
 
     private const val NOTIFICATION_ID_SUBSTITUTIONS = 1001
     private const val NOTIFICATION_ID_TIMETABLE = 1002
     private const val NOTIFICATION_ID_TEST = 1003
+    private const val NOTIFICATION_ID_APP_UPDATE = 1004
     private const val NOTIFICATION_ID_MESH_BASE = 2000
 
     fun createNotificationChannel(context: Context) {
@@ -172,6 +174,28 @@ object NotificationHelper {
             bigText = "Monitorowanie zmian dla $targetDesc jest włączone. Gdy pojawią się nowe zastępstwa lub wiadomości w komunikatorze, otrzymasz powiadomienie."
         )
         return true
+    }
+
+    fun showAppUpdateNotification(
+        context: Context,
+        candidate: com.example.data.model.ApkCandidate,
+        currentVersionName: String
+    ) {
+        if (!hasNotificationPermission(context)) return
+        createNotificationChannel(context)
+
+        val versionLabel = candidate.versionName.takeIf { it.isNotBlank() }?.let { "v$it" } ?: candidate.fileName
+        val title = "Dostępna aktualizacja • $versionLabel"
+        val body = "Nowa wersja aplikacji ($versionLabel) jest gotowa do pobrania z GitHuba (zainstalowana: $currentVersionName). Dotknij, aby otworzyć aktualizację."
+        postNotification(
+            context = context,
+            channelId = CHANNEL_ID,
+            notificationId = NOTIFICATION_ID_APP_UPDATE,
+            title = title,
+            shortText = "Nowa wersja $versionLabel jest gotowa do instalacji.",
+            bigText = body,
+            openRoute = ROUTE_SETTINGS
+        )
     }
 
     private fun postNotification(

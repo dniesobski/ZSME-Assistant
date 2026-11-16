@@ -750,13 +750,13 @@ class ZsmePortalClient(
     }
 
     suspend fun checkAppUpdateInRepo(
-        repoUrl: String = UserPreferences.DEFAULT_GITHUB_APK_URL,
+        repoUrl: String = UserPreferences.DEFAULT_GITHUB_RELEASES_URL,
         currentVersionName: String,
         installedLastUpdateMillis: Long,
         prefs: UserPreferences
     ): Result<AppUpdateCheckResult> = withContext(Dispatchers.IO) {
         runCatching {
-            val cleanRepo = repoUrl.trim().ifBlank { UserPreferences.DEFAULT_GITHUB_APK_URL }
+            val cleanRepo = repoUrl.trim().ifBlank { UserPreferences.DEFAULT_GITHUB_RELEASES_URL }
             var selectedCandidate: ApkCandidate? = null
 
             val cleanWithoutQuery = cleanRepo.substringBefore('?').substringBefore('#')

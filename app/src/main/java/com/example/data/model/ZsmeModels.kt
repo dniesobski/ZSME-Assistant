@@ -203,7 +203,7 @@ data class UserPreferences(
     val lastApkLastModified: String = "",
     val lastApkETag: String = "",
     val lastApkContentLength: Long = 0L,
-    val appUpdateUrl: String = DEFAULT_GITHUB_APK_URL,
+    val appUpdateUrl: String = DEFAULT_GITHUB_RELEASES_URL,
     val additionalSchools: List<TeacherSchoolConfig> = emptyList()
 ) {
     fun allTeacherSchools(): List<TeacherSchoolConfig> {
@@ -242,7 +242,7 @@ data class UserPreferences(
         const val DEFAULT_PLAN_URL = "https://plan.zsme.pl/"
         const val DEFAULT_SUBSTITUTIONS_URL = "https://sekretariat.zsme.pl/tv.php"
         const val DEFAULT_APP_UPDATE_URL = "https://sekretariat.zsme.pl/app"
-        const val DEFAULT_GITHUB_APK_URL =
+        const val LEGACY_GITHUB_V106_URL =
             "https://github.com/dniesobski/ZSME-Assistant/releases/download/v1.0.6/ZSMEAssist.apk"
         const val DEFAULT_GITHUB_RELEASES_URL =
             "https://github.com/dniesobski/ZSME-Assistant/releases/latest"

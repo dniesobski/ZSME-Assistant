@@ -1,11 +1,7 @@
 package com.example.ui.screens
 
 import android.Manifest
-import android.content.Context
-import android.content.Intent
-import android.net.Uri
 import android.os.Build
-import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
@@ -68,7 +64,6 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -85,7 +80,6 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.core.content.FileProvider
 import com.example.BuildConfig
 import com.example.data.model.StudentGroup
 import com.example.data.model.TeacherSchoolConfig
@@ -95,7 +89,6 @@ import com.example.data.model.UserRole
 import com.example.notifications.NotificationHelper
 import com.example.ui.ZsmeUiState
 import com.example.ui.theme.SchoolColorPalette
-import java.io.File
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -121,7 +114,6 @@ fun SettingsScreen(
     onSaveAppUpdateUrl: (String) -> Unit,
     onCheckAppUpdate: (repoUrl: String?, forceDownload: Boolean) -> Unit,
     onInstallDownloadedApk: () -> Unit,
-    onConsumePendingApkInstall: () -> Unit,
     onOpenSekretariatWeb: () -> Unit,
     onOpenPlanWeb: () -> Unit,
     modifier: Modifier = Modifier
@@ -135,11 +127,10 @@ fun SettingsScreen(
     var substitutionsUrlInput by remember(prefs.substitutionsUrl) { mutableStateOf(prefs.substitutionsUrl) }
     var planUrlInput by remember(prefs.planUrl) { mutableStateOf(prefs.planUrl) }
     var appUpdateUrlInput by remember(prefs.appUpdateUrl) {
-        mutableStateOf(prefs.appUpdateUrl.ifBlank { UserPreferences.DEFAULT_GITHUB_APK_URL })
+        mutableStateOf(prefs.appUpdateUrl.ifBlank { UserPreferences.DEFAULT_GITHUB_RELEASES_URL })
     }
     var customFilterInput by remember(prefs.customGroupFilter) { mutableStateOf(prefs.customGroupFilter) }
     var hasNotifPermission by remember { mutableStateOf(NotificationHelper.hasNotificationPermission(context)) }
-    var pendingApkAfterUnknownSources by remember { mutableStateOf<String?>(null) }
     var isAddSchoolDialogOpen by remember { mutableStateOf(false) }
     var editingSchool by remember { mutableStateOf<TeacherSchoolConfig?>(null) }
     var isTeacherPasswordDialogOpen by remember { mutableStateOf(false) }
@@ -148,36 +139,6 @@ fun SettingsScreen(
         contract = ActivityResultContracts.RequestPermission()
     ) { granted ->
         hasNotifPermission = granted
-    }
-
-    val unknownSourcesLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.StartActivityForResult()
-    ) {
-        val pendingPath = pendingApkAfterUnknownSources
-        pendingApkAfterUnknownSources = null
-        if (pendingPath != null &&
-            (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || context.packageManager.canRequestPackageInstalls())
-        ) {
-            launchApkInstaller(context, File(pendingPath))
-        }
-    }
-
-    LaunchedEffect(updateState.pendingInstallApkPath) {
-        val apkPath = updateState.pendingInstallApkPath ?: return@LaunchedEffect
-        val file = File(apkPath)
-        if (file.exists()) {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !context.packageManager.canRequestPackageInstalls()) {
-                pendingApkAfterUnknownSources = apkPath
-                val intent = Intent(
-                    Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
-                    Uri.parse("package:${context.packageName}")
-                )
-                runCatching { unknownSourcesLauncher.launch(intent) }
-            } else {
-                launchApkInstaller(context, file)
-            }
-        }
-        onConsumePendingApkInstall()
     }
 
     Box(
@@ -642,7 +603,6 @@ fun SettingsScreen(
                         verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         val presets = listOf(
-                            "GitHub (v1.0.6)" to UserPreferences.DEFAULT_GITHUB_APK_URL,
                             "GitHub (najnowsze)" to UserPreferences.DEFAULT_GITHUB_RELEASES_URL,
                             "Serwer ZSME" to UserPreferences.DEFAULT_APP_UPDATE_URL
                         )
@@ -663,7 +623,7 @@ fun SettingsScreen(
                         value = appUpdateUrlInput,
                         onValueChange = { appUpdateUrlInput = it },
                         label = { Text("Link do aktualizacji (GitHub / APK)") },
-                        placeholder = { Text(UserPreferences.DEFAULT_GITHUB_APK_URL) },
+                        placeholder = { Text(UserPreferences.DEFAULT_GITHUB_RELEASES_URL) },
                         singleLine = true,
                         modifier = Modifier
                             .fillMaxWidth()
@@ -1259,20 +1219,5 @@ private fun SettingsSectionCard(
             }
             content()
         }
-    }
-}
-
-private fun launchApkInstaller(context: Context, apkFile: File) {
-    runCatching {
-        val uri = FileProvider.getUriForFile(
-            context,
-            "${context.packageName}.fileprovider",
-            apkFile
-        )
-        val installIntent = Intent(Intent.ACTION_VIEW).apply {
-            setDataAndType(uri, "application/vnd.android.package-archive")
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
-        }
-        context.startActivity(installIntent)
     }
 }

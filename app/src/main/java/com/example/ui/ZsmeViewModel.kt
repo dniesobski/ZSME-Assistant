@@ -56,6 +56,7 @@ data class AppUpdateUiState(
     val checkResult: AppUpdateCheckResult? = null,
     val pendingInstallApkPath: String? = null,
     val downloadedApkPath: String? = null,
+    val isStartupUpdateDialogVisible: Boolean = false,
     val errorMessage: String? = null
 )
 
@@ -300,6 +301,7 @@ class ZsmeViewModel(application: Application) : AndroidViewModel(application) {
             } else if (prefs.userRole == UserRole.STUDENT && prefs.selectedClassUrl.isNotBlank()) {
                 refreshTimetable(notifyOnChange = false)
             }
+            checkForAppUpdateOnStartup()
         }
     }
 
@@ -951,18 +953,100 @@ class ZsmeViewModel(application: Application) : AndroidViewModel(application) {
     // --- App Repository Update actions ---
 
     fun updateAppUpdateUrl(url: String) {
-        val clean = url.trim().ifBlank { UserPreferences.DEFAULT_GITHUB_APK_URL }
+        val trimmed = url.trim()
+        val clean = if (trimmed.isBlank() || trimmed.equals(UserPreferences.LEGACY_GITHUB_V106_URL, ignoreCase = true)) {
+            UserPreferences.DEFAULT_GITHUB_RELEASES_URL
+        } else {
+            trimmed
+        }
         viewModelScope.launch {
             prefsRepo.setAppUpdateUrl(clean)
             transientFlags.update { it.copy(snackbarMessage = "Zapisano adres aktualizacji: $clean") }
         }
     }
 
+    private fun checkForAppUpdateOnStartup() {
+        viewModelScope.launch {
+            if (appUpdateFlow.value.isChecking || appUpdateFlow.value.isDownloading) return@launch
+            val prefs = prefsRepo.getPreferencesSnapshot()
+            val rawUrl = prefs.appUpdateUrl.trim()
+            val effectiveUrl = if (rawUrl.isBlank() ||
+                rawUrl.equals(UserPreferences.LEGACY_GITHUB_V106_URL, ignoreCase = true)
+            ) {
+                UserPreferences.DEFAULT_GITHUB_RELEASES_URL
+            } else {
+                rawUrl
+            }
+            val result = repository.checkAppUpdate(effectiveUrl)
+            result.onSuccess { checkResult ->
+                val candidate = checkResult.candidate
+                if (checkResult.updateAvailable && candidate != null) {
+                    appUpdateFlow.update {
+                        it.copy(
+                            checkResult = checkResult,
+                            isStartupUpdateDialogVisible = true,
+                            errorMessage = null
+                        )
+                    }
+                    if (prefs.notificationsEnabled) {
+                        NotificationHelper.showAppUpdateNotification(
+                            context = app,
+                            candidate = candidate,
+                            currentVersionName = checkResult.currentVersionName
+                        )
+                    }
+                } else {
+                    appUpdateFlow.update {
+                        it.copy(
+                            checkResult = it.checkResult ?: checkResult
+                        )
+                    }
+                    if (candidate != null && prefs.lastApkUrl.isBlank()) {
+                        repository.rememberCurrentApkMetadata(candidate)
+                    }
+                }
+            }
+        }
+    }
+
+    fun dismissStartupUpdateDialog() {
+        appUpdateFlow.update { it.copy(isStartupUpdateDialogVisible = false) }
+    }
+
+    fun acceptStartupAppUpdate() {
+        val state = appUpdateFlow.value
+        appUpdateFlow.update { it.copy(isStartupUpdateDialogVisible = false) }
+        val downloaded = state.downloadedApkPath
+        if (!downloaded.isNullOrBlank()) {
+            installDownloadedApk()
+            return
+        }
+        val candidate = state.checkResult?.candidate
+        if (candidate != null) {
+            if (state.isChecking || state.isDownloading) return
+            viewModelScope.launch {
+                transientFlags.update {
+                    it.copy(snackbarMessage = "Pobieranie pliku ${candidate.fileName}...")
+                }
+                downloadAndPrepareUpdate(candidate)
+            }
+        } else {
+            checkForAppUpdate(forceDownload = true)
+        }
+    }
+
     fun checkForAppUpdate(repoUrl: String? = null, forceDownload: Boolean = false) {
         if (appUpdateFlow.value.isChecking || appUpdateFlow.value.isDownloading) return
         viewModelScope.launch {
-            val effectiveUrl = repoUrl?.trim()?.takeIf { it.isNotBlank() }
-                ?: uiState.value.preferences.appUpdateUrl.trim().ifBlank { UserPreferences.DEFAULT_GITHUB_APK_URL }
+            val rawCandidate = repoUrl?.trim()?.takeIf { it.isNotBlank() }
+                ?: uiState.value.preferences.appUpdateUrl.trim()
+            val effectiveUrl = if (rawCandidate.isBlank() ||
+                rawCandidate.equals(UserPreferences.LEGACY_GITHUB_V106_URL, ignoreCase = true)
+            ) {
+                UserPreferences.DEFAULT_GITHUB_RELEASES_URL
+            } else {
+                rawCandidate
+            }
 
             if (effectiveUrl != uiState.value.preferences.appUpdateUrl) {
                 prefsRepo.setAppUpdateUrl(effectiveUrl)

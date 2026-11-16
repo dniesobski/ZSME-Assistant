@@ -1035,24 +1035,48 @@ class ZsmeParserAndMatcherTest {
 
     @Test
     fun `GitHub APK URL and Releases API parsing extract version and download candidate`() {
-        val githubApkUrl = "https://github.com/dniesobski/ZSME-Assistant/releases/download/v1.0.6/ZSMEAssist.apk"
-        assertEquals(githubApkUrl, UserPreferences.DEFAULT_GITHUB_APK_URL)
+        val legacyV106Url = "https://github.com/dniesobski/ZSME-Assistant/releases/download/v1.0.6/ZSMEAssist.apk"
+        val latestReleasesUrl = "https://github.com/dniesobski/ZSME-Assistant/releases/latest"
+        assertEquals(legacyV106Url, UserPreferences.LEGACY_GITHUB_V106_URL)
+        assertEquals(latestReleasesUrl, UserPreferences.DEFAULT_GITHUB_RELEASES_URL)
+        assertEquals(latestReleasesUrl, UserPreferences().appUpdateUrl)
         assertEquals(
             "1.0.6",
-            com.example.data.model.AppVersionHelper.extractVersionFromText(githubApkUrl)
+            com.example.data.model.AppVersionHelper.extractVersionFromText(legacyV106Url)
         )
         assertTrue(com.example.data.model.AppVersionHelper.compareVersions("1.0.6", "1.0") > 0)
 
         val client = com.example.data.network.ZsmePortalClient()
         assertEquals(
             "https://api.github.com/repos/dniesobski/ZSME-Assistant/releases/latest",
-            client.resolveGitHubReleaseApiUrl("https://github.com/dniesobski/ZSME-Assistant/releases/latest")
+            client.resolveGitHubReleaseApiUrl(latestReleasesUrl)
         )
         assertEquals(
             "https://api.github.com/repos/dniesobski/ZSME-Assistant/releases/tags/v1.0.6",
             client.resolveGitHubReleaseApiUrl("https://github.com/dniesobski/ZSME-Assistant/releases/tag/v1.0.6")
         )
         assertEquals(null, client.resolveGitHubReleaseApiUrl("https://sekretariat.zsme.pl/app"))
+
+        val latestCiJson = """
+            {
+              "tag_name": "v1.0.12",
+              "name": "Aktualizacja #12",
+              "published_at": "2026-11-16T10:00:00Z",
+              "assets": [
+                {
+                  "name": "ZSMEAssist.apk",
+                  "size": 12456789,
+                  "browser_download_url": "https://github.com/dniesobski/ZSME-Assistant/releases/download/v1.0.12/ZSMEAssist.apk"
+                }
+              ]
+            }
+        """.trimIndent()
+        val parsedCi = client.parseGitHubReleaseJson(latestCiJson)
+        assertNotNull(parsedCi)
+        assertEquals("ZSMEAssist.apk", parsedCi!!.fileName)
+        assertEquals("1.0.12", parsedCi.versionName)
+        assertTrue(com.example.data.model.AppVersionHelper.compareVersions(parsedCi.versionName, "1.0") > 0)
+        assertTrue(com.example.data.model.AppVersionHelper.compareVersions(parsedCi.versionName, "1.0.6") > 0)
 
         val releaseJson = """
             {
@@ -1063,7 +1087,7 @@ class ZsmeParserAndMatcherTest {
                 {
                   "name": "ZSMEAssist.apk",
                   "size": 12345678,
-                  "browser_download_url": "$githubApkUrl"
+                  "browser_download_url": "$legacyV106Url"
                 }
               ]
             }
@@ -1072,7 +1096,7 @@ class ZsmeParserAndMatcherTest {
         assertNotNull(parsed)
         assertEquals("ZSMEAssist.apk", parsed!!.fileName)
         assertEquals("1.0.6", parsed.versionName)
-        assertEquals(githubApkUrl, parsed.downloadUrl)
+        assertEquals(legacyV106Url, parsed.downloadUrl)
         assertEquals(12345678L, parsed.contentLength)
         assertTrue(parsed.lastModifiedMillis > 0L)
 
@@ -1081,9 +1105,9 @@ class ZsmeParserAndMatcherTest {
               <li><a href="/dniesobski/ZSME-Assistant/releases/download/v1.0.6/ZSMEAssist.apk">ZSMEAssist.apk</a></li>
             </ul>
         """.trimIndent()
-        val htmlCandidates = ZsmeHtmlParser.parseAppRepositoryApks(fragmentHtml, "https://github.com/dniesobski/ZSME-Assistant/releases/latest")
+        val htmlCandidates = ZsmeHtmlParser.parseAppRepositoryApks(fragmentHtml, latestReleasesUrl)
         assertEquals(1, htmlCandidates.size)
         assertEquals("1.0.6", htmlCandidates.first().versionName)
-        assertEquals(githubApkUrl, htmlCandidates.first().downloadUrl)
+        assertEquals(legacyV106Url, htmlCandidates.first().downloadUrl)
     }
 }
