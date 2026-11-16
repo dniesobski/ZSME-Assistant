@@ -1041,6 +1041,10 @@ class ZsmeParserAndMatcherTest {
         assertEquals(latestReleasesUrl, UserPreferences.DEFAULT_GITHUB_RELEASES_URL)
         assertEquals(latestReleasesUrl, UserPreferences().appUpdateUrl)
         assertTrue(UserPreferences().autoCheckAppUpdates)
+        assertEquals("v1.0.8", com.example.data.model.AppVersionHelper.formatDisplayVersion("1.0.8"))
+        assertEquals("v1.0.8", com.example.data.model.AppVersionHelper.formatDisplayVersion("v1.0.8"))
+        assertEquals(0, com.example.data.model.AppVersionHelper.compareVersions("1.0.8", "v1.0.8"))
+        assertTrue(com.example.data.model.AppVersionHelper.compareVersions("1.0.9", "v1.0.8") > 0)
         assertEquals(
             "1.0.6",
             com.example.data.model.AppVersionHelper.extractVersionFromText(legacyV106Url)

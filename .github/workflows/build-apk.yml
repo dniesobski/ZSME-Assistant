@@ -38,7 +38,7 @@ jobs:
             keytool -genkey -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
           fi
 
-          gradle assembleDebug
+          gradle assembleDebug -PappVersionName=v1.0.${{ github.run_number }} -PappVersionCode=${{ github.run_number }}
           cp app/build/outputs/apk/debug/app-debug.apk "$GITHUB_WORKSPACE/ZSMEAssist.apk"
 
       - name: Publikacja najnowszego APK w GitHub Releases

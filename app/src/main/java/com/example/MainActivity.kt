@@ -72,6 +72,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.toRoute
+import com.example.data.model.AppVersionHelper
 import com.example.data.model.ThemeMode
 import com.example.data.model.UserPreferences
 import com.example.data.model.UserRole
@@ -574,7 +575,8 @@ fun ZsmeAppShell(
 
         val startupCandidate = uiState.appUpdateState.checkResult?.candidate
         if (uiState.appUpdateState.isStartupUpdateDialogVisible && startupCandidate != null) {
-            val verLabel = startupCandidate.versionName.takeIf { it.isNotBlank() }?.let { "v$it" }
+            val verLabel = startupCandidate.versionName.takeIf { it.isNotBlank() }
+                ?.let { AppVersionHelper.formatDisplayVersion(it) }
                 ?: startupCandidate.fileName
             AlertDialog(
                 onDismissRequest = viewModel::dismissStartupUpdateDialog,
@@ -592,7 +594,9 @@ fun ZsmeAppShell(
                     )
                 },
                 text = {
-                    val installedVer = uiState.appUpdateState.checkResult?.currentVersionName.orEmpty()
+                    val installedVer = AppVersionHelper.formatDisplayVersion(
+                        uiState.appUpdateState.checkResult?.currentVersionName.orEmpty()
+                    )
                     Text(
                         text = "Na GitHubie pojawiła się nowsza wersja aplikacji (${startupCandidate.fileName}). Zainstalowana wersja: $installedVer. Czy chcesz pobrać i zainstalować aktualizację teraz?",
                         style = MaterialTheme.typography.bodyMedium

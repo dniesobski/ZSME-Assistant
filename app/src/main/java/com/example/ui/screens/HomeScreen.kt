@@ -65,6 +65,7 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.example.data.model.AppVersionHelper
 import com.example.data.model.LiveLessonItem
 import com.example.data.model.LiveLessonSlot
 import com.example.data.model.LiveScheduleEvaluation
@@ -438,7 +439,9 @@ private fun HomeUpdateBannerCard(
     onDownloadAndInstall: () -> Unit,
     onInstallDownloaded: () -> Unit
 ) {
-    val label = versionLabel.takeIf { it.isNotBlank() }?.let { "v$it" } ?: fileName
+    val label = versionLabel.takeIf { it.isNotBlank() }
+        ?.let { AppVersionHelper.formatDisplayVersion(it) }
+        ?: fileName
     Card(
         shape = RoundedCornerShape(18.dp),
         colors = CardDefaults.cardColors(

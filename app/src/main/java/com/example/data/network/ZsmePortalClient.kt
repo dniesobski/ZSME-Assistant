@@ -835,21 +835,31 @@ class ZsmePortalClient(
             val enriched = fetchApkHeaders(baseCandidate)
             val remoteLastMod = enriched.lastModifiedHeader.ifBlank { enriched.directoryDateText }
 
-            val higherSemanticVersion = enriched.versionName.isNotBlank() &&
-                AppVersionHelper.compareVersions(enriched.versionName, currentVersionName) > 0
-            val changedVersionVsStored = prefs.lastApkUrl.isNotBlank() &&
-                enriched.versionName.isNotBlank() &&
+            val hasRemoteVersion = enriched.versionName.isNotBlank()
+            val versionCmp = if (hasRemoteVersion) {
+                AppVersionHelper.compareVersions(enriched.versionName, currentVersionName)
+            } else 0
+            val higherSemanticVersion = hasRemoteVersion && versionCmp > 0
+            val sameOrOlderSemanticVersion = hasRemoteVersion && versionCmp <= 0
+
+            val changedVersionVsStored = !sameOrOlderSemanticVersion &&
+                prefs.lastApkUrl.isNotBlank() &&
+                hasRemoteVersion &&
                 enriched.versionName != prefs.lastApkVersion
-            val changedDateVsStored = prefs.lastApkUrl.isNotBlank() &&
+            val changedDateVsStored = !sameOrOlderSemanticVersion &&
+                prefs.lastApkUrl.isNotBlank() &&
                 remoteLastMod.isNotBlank() &&
                 remoteLastMod != prefs.lastApkLastModified
-            val changedFileOrUrl = prefs.lastApkUrl.isNotBlank() &&
+            val changedFileOrUrl = !sameOrOlderSemanticVersion &&
+                prefs.lastApkUrl.isNotBlank() &&
                 enriched.downloadUrl != prefs.lastApkUrl
-            val changedETagOrSize = prefs.lastApkUrl.isNotBlank() && (
+            val changedETagOrSize = !sameOrOlderSemanticVersion &&
+                prefs.lastApkUrl.isNotBlank() && (
                 (enriched.eTag.isNotBlank() && prefs.lastApkETag.isNotBlank() && enriched.eTag != prefs.lastApkETag) ||
                     (enriched.contentLength > 0L && prefs.lastApkContentLength > 0L && enriched.contentLength != prefs.lastApkContentLength)
                 )
-            val firstCheckNewerBuild = prefs.lastApkUrl.isBlank() &&
+            val firstCheckNewerBuild = !sameOrOlderSemanticVersion &&
+                prefs.lastApkUrl.isBlank() &&
                 enriched.lastModifiedMillis > 0L &&
                 enriched.lastModifiedMillis > installedLastUpdateMillis
 
@@ -860,24 +870,27 @@ class ZsmePortalClient(
                 changedETagOrSize ||
                 firstCheckNewerBuild
 
+            val remoteDisplayVer = AppVersionHelper.formatDisplayVersion(enriched.versionName)
+            val currentDisplayVer = AppVersionHelper.formatDisplayVersion(currentVersionName)
+
             val reason = when {
                 higherSemanticVersion ->
-                    "Dostępna nowa wersja ${enriched.versionName} (obecna: $currentVersionName)."
+                    "Dostępna nowa wersja $remoteDisplayVer (obecna: $currentDisplayVer)."
                 changedVersionVsStored ->
-                    "Zmieniła się wersja pliku APK w repozytorium (${enriched.versionName})."
+                    "Zmieniła się wersja pliku APK w repozytorium ($remoteDisplayVer)."
                 changedDateVsStored || firstCheckNewerBuild ->
                     "Wykryto nowszą datę modyfikacji pliku APK (${remoteLastMod.ifBlank { "nowy plik" }})."
                 changedFileOrUrl || changedETagOrSize ->
                     "Wykryto nowy plik APK w repozytorium (${enriched.fileName})."
                 else ->
-                    "Masz najnowszą wersję aplikacji (${enriched.versionName.ifBlank { currentVersionName }})."
+                    "Masz najnowszą wersję aplikacji (${remoteDisplayVer.ifBlank { currentDisplayVer }})."
             }
 
             AppUpdateCheckResult(
                 candidate = enriched,
                 updateAvailable = updateAvailable,
                 reason = reason,
-                currentVersionName = currentVersionName
+                currentVersionName = currentDisplayVer.ifBlank { currentVersionName }
             )
         }
     }

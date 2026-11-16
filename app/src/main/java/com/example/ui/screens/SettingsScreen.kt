@@ -81,6 +81,7 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.BuildConfig
+import com.example.data.model.AppVersionHelper
 import com.example.data.model.StudentGroup
 import com.example.data.model.TeacherSchoolConfig
 import com.example.data.model.ThemeMode
@@ -590,7 +591,7 @@ fun SettingsScreen(
                     icon = Icons.Filled.SystemUpdate
                 ) {
                     Text(
-                        text = "Wersja zainstalowana: ${BuildConfig.VERSION_NAME}",
+                        text = "Wersja zainstalowana: ${AppVersionHelper.formatDisplayVersion(BuildConfig.VERSION_NAME)}",
                         style = MaterialTheme.typography.titleSmall
                     )
                     Row(
@@ -687,7 +688,9 @@ fun SettingsScreen(
                         if (cand != null) {
                             val metaDetails = buildString {
                                 append("Plik: ${cand.fileName}")
-                                if (cand.versionName.isNotBlank()) append(" • v${cand.versionName}")
+                                if (cand.versionName.isNotBlank()) {
+                                    append(" • ${AppVersionHelper.formatDisplayVersion(cand.versionName)}")
+                                }
                                 if (cand.contentLength > 0L) {
                                     val mb = cand.contentLength / (1024f * 1024f)
                                     append(" • ${"%.1f".format(mb)} MB")

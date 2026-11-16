@@ -168,6 +168,16 @@ object AppVersionHelper {
         return 0
     }
 
+    fun formatDisplayVersion(version: String): String {
+        val clean = version.trim()
+        if (clean.isBlank()) return ""
+        return if (clean.startsWith("v", ignoreCase = true)) {
+            "v${clean.substring(1)}"
+        } else {
+            "v$clean"
+        }
+    }
+
     fun extractVersionFromText(text: String): String {
         val explicit = Regex("""(?:v|ver|version|[-_])(\d+(?:\.\d+){1,3})(?=\D|$)""", RegexOption.IGNORE_CASE)
             .find(text)?.groupValues?.get(1)

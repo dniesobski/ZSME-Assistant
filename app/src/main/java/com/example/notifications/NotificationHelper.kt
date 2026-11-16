@@ -13,6 +13,7 @@ import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import com.example.MainActivity
 import com.example.R
+import com.example.data.model.AppVersionHelper
 import com.example.data.model.SubstitutionItem
 import com.example.mesh.MeshMessage
 
@@ -184,9 +185,12 @@ object NotificationHelper {
         if (!hasNotificationPermission(context)) return
         createNotificationChannel(context)
 
-        val versionLabel = candidate.versionName.takeIf { it.isNotBlank() }?.let { "v$it" } ?: candidate.fileName
+        val versionLabel = candidate.versionName.takeIf { it.isNotBlank() }
+            ?.let { AppVersionHelper.formatDisplayVersion(it) }
+            ?: candidate.fileName
+        val currentLabel = AppVersionHelper.formatDisplayVersion(currentVersionName).ifBlank { currentVersionName }
         val title = "Dostępna aktualizacja • $versionLabel"
-        val body = "Nowa wersja aplikacji ($versionLabel) jest gotowa do pobrania z GitHuba (zainstalowana: $currentVersionName). Dotknij, aby otworzyć aktualizację."
+        val body = "Nowa wersja aplikacji ($versionLabel) jest gotowa do pobrania z GitHuba (zainstalowana: $currentLabel). Dotknij, aby otworzyć aktualizację."
         postNotification(
             context = context,
             channelId = CHANNEL_ID,

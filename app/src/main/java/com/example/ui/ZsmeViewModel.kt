@@ -9,6 +9,7 @@ import com.example.data.ZsmeRepository
 import com.example.data.calendar.GoogleCredentialAuthManager
 import com.example.data.model.ApkCandidate
 import com.example.data.model.AppUpdateCheckResult
+import com.example.data.model.AppVersionHelper
 import com.example.data.model.ClassTimetable
 import com.example.data.model.GoogleCredentialSession
 import com.example.data.model.ScheduleFilterMatcher
@@ -1102,7 +1103,7 @@ class ZsmeViewModel(application: Application) : AndroidViewModel(application) {
                             snackbarMessage = if (candidate == null) {
                                 "Nie znaleziono pliku APK pod adresem $effectiveUrl"
                             } else {
-                                "Aplikacja jest aktualna (${BuildConfig.VERSION_NAME})"
+                                "Aplikacja jest aktualna (${AppVersionHelper.formatDisplayVersion(BuildConfig.VERSION_NAME)})"
                             }
                         )
                     }
