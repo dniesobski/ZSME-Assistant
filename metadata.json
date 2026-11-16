@@ -1,5 +1,5 @@
 {
-  "name": "ZSME Plan",
+  "name": "ZSME Assistant",
   "description": "Aplikacja dla uczniów Zespołu Szkół Mechaniczno-Elektrycznych (ZSME) do przeglądania planu lekcji (plan.zsme.pl) oraz otrzymywania powiadomień o zastępstwach (sekretariat.zsme.pl).",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]

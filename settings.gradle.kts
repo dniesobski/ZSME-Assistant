@@ -22,6 +22,6 @@ dependencyResolutionManagement {
   }
 }
 
-rootProject.name = "ZSME Plan"
+rootProject.name = "ZSME Assistant"
 
 include(":app")
