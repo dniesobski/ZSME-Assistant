@@ -204,6 +204,7 @@ data class UserPreferences(
     val lastApkETag: String = "",
     val lastApkContentLength: Long = 0L,
     val appUpdateUrl: String = DEFAULT_GITHUB_RELEASES_URL,
+    val autoCheckAppUpdates: Boolean = true,
     val additionalSchools: List<TeacherSchoolConfig> = emptyList()
 ) {
     fun allTeacherSchools(): List<TeacherSchoolConfig> {

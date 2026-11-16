@@ -496,6 +496,7 @@ fun ZsmeAppShell(
                             onSendTestNotification = viewModel::sendTestNotification,
                             onSelectThemeMode = viewModel::setThemeMode,
                             onToggleDynamicColor = viewModel::setUseDynamicColor,
+                            onToggleAutoCheckAppUpdates = viewModel::setAutoCheckAppUpdates,
                             onSaveAppUpdateUrl = viewModel::updateAppUpdateUrl,
                             onCheckAppUpdate = viewModel::checkForAppUpdate,
                             onInstallDownloadedApk = viewModel::installDownloadedApk,

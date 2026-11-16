@@ -63,6 +63,7 @@ class PreferencesRepository(private val context: Context) {
         val LAST_APK_ETAG = stringPreferencesKey("last_apk_etag")
         val LAST_APK_CONTENT_LENGTH = longPreferencesKey("last_apk_content_length")
         val APP_UPDATE_URL = stringPreferencesKey("app_update_url")
+        val AUTO_CHECK_APP_UPDATES = booleanPreferencesKey("auto_check_app_updates")
         val TEACHER_ADDITIONAL_SCHOOLS_JSON = stringPreferencesKey("teacher_additional_schools_json")
 
         val CACHED_CLASSES_JSON = stringPreferencesKey("cached_classes_json")
@@ -121,6 +122,7 @@ class PreferencesRepository(private val context: Context) {
             appUpdateUrl = prefs[Keys.APP_UPDATE_URL]
                 ?.takeIf { it.isNotBlank() && !it.equals(UserPreferences.LEGACY_GITHUB_V106_URL, ignoreCase = true) }
                 ?: UserPreferences.DEFAULT_GITHUB_RELEASES_URL,
+            autoCheckAppUpdates = prefs[Keys.AUTO_CHECK_APP_UPDATES] ?: true,
             additionalSchools = extraSchools
         )
     }
@@ -309,6 +311,12 @@ class PreferencesRepository(private val context: Context) {
                 url,
                 UserPreferences.DEFAULT_GITHUB_RELEASES_URL
             )
+        }
+    }
+
+    suspend fun setAutoCheckAppUpdates(enabled: Boolean) {
+        context.dataStore.edit { prefs ->
+            prefs[Keys.AUTO_CHECK_APP_UPDATES] = enabled
         }
     }
 

@@ -965,10 +965,29 @@ class ZsmeViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun setAutoCheckAppUpdates(enabled: Boolean) {
+        viewModelScope.launch {
+            prefsRepo.setAutoCheckAppUpdates(enabled)
+            transientFlags.update {
+                it.copy(
+                    snackbarMessage = if (enabled) {
+                        "Automatyczne sprawdzanie aktualizacji włączone"
+                    } else {
+                        "Automatyczne sprawdzanie aktualizacji wyłączone"
+                    }
+                )
+            }
+            if (enabled && appUpdateFlow.value.checkResult == null) {
+                checkForAppUpdateOnStartup()
+            }
+        }
+    }
+
     private fun checkForAppUpdateOnStartup() {
         viewModelScope.launch {
             if (appUpdateFlow.value.isChecking || appUpdateFlow.value.isDownloading) return@launch
             val prefs = prefsRepo.getPreferencesSnapshot()
+            if (!prefs.autoCheckAppUpdates) return@launch
             val rawUrl = prefs.appUpdateUrl.trim()
             val effectiveUrl = if (rawUrl.isBlank() ||
                 rawUrl.equals(UserPreferences.LEGACY_GITHUB_V106_URL, ignoreCase = true)

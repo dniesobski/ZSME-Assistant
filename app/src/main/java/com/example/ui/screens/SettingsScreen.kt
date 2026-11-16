@@ -111,6 +111,7 @@ fun SettingsScreen(
     onSendTestNotification: () -> Unit,
     onSelectThemeMode: (ThemeMode) -> Unit,
     onToggleDynamicColor: (Boolean) -> Unit,
+    onToggleAutoCheckAppUpdates: (Boolean) -> Unit,
     onSaveAppUpdateUrl: (String) -> Unit,
     onCheckAppUpdate: (repoUrl: String?, forceDownload: Boolean) -> Unit,
     onInstallDownloadedApk: () -> Unit,
@@ -592,6 +593,32 @@ fun SettingsScreen(
                         text = "Wersja zainstalowana: ${BuildConfig.VERSION_NAME}",
                         style = MaterialTheme.typography.titleSmall
                     )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .weight(1f)
+                                .padding(end = 12.dp)
+                        ) {
+                            Text(
+                                text = "Automatyczne sprawdzanie aktualizacji",
+                                style = MaterialTheme.typography.titleSmall
+                            )
+                            Text(
+                                text = "Szukaj nowej wersji na GitHubie przy uruchomieniu aplikacji.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Switch(
+                            checked = prefs.autoCheckAppUpdates,
+                            onCheckedChange = onToggleAutoCheckAppUpdates,
+                            modifier = Modifier.testTag("auto_check_app_updates_switch")
+                        )
+                    }
                     Text(
                         text = "Wybierz źródło aktualizacji lub wklej bezpośredni link do pliku .apk / wydania GitHub Releases:",
                         style = MaterialTheme.typography.bodySmall,
