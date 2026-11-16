@@ -1,12 +1,15 @@
 package com.example
 
 import com.example.data.calendar.CalendarExportPlanner
+import com.example.data.calendar.DeviceCalendarRepository
+import com.example.data.model.CalendarExportBackend
 import com.example.data.model.CalendarExportOptions
 import com.example.data.model.CalendarRecurrenceMode
 import com.example.data.model.CalendarStartWeekMode
 import com.example.data.model.ClassTimetable
 import com.example.data.model.DaySchedule
 import com.example.data.model.LessonEntry
+import com.example.data.model.TargetCalendarItem
 import com.example.data.model.TeacherSchoolConfig
 import com.example.data.model.TimetableCategory
 import org.junit.Assert.assertEquals
@@ -132,5 +135,115 @@ class CalendarExportPlannerTest {
             )
         )
         assertEquals("Plan zajęć — ZSME, ZS5", suggested)
+    }
+
+    @Test
+    fun `resolveSelection matches preferred Google account case-insensitively and picks primary calendar`() {
+        val calendars = listOf(
+            TargetCalendarItem(
+                id = "1",
+                name = "Praca",
+                accountName = "jan.kowalski@gmail.com",
+                isPrimary = false,
+                backend = CalendarExportBackend.DEVICE_CALENDAR_PROVIDER
+            ),
+            TargetCalendarItem(
+                id = "2",
+                name = "Główny Google",
+                accountName = "nauczyciel@zsme.pl",
+                isPrimary = false,
+                backend = CalendarExportBackend.DEVICE_CALENDAR_PROVIDER
+            ),
+            TargetCalendarItem(
+                id = "3",
+                name = "Szkoła ZSME",
+                accountName = "nauczyciel@zsme.pl",
+                isPrimary = true,
+                backend = CalendarExportBackend.DEVICE_CALENDAR_PROVIDER
+            )
+        )
+
+        val (acc, calId) = DeviceCalendarRepository.resolveSelection(
+            calendars = calendars,
+            preferredAccount = "NAUCZYCIEL@zsme.pl",
+            currentSelectedAccount = "jan.kowalski@gmail.com",
+            currentSelectedCalendarId = "1"
+        )
+        assertEquals("nauczyciel@zsme.pl", acc)
+        assertEquals("3", calId)
+
+        val (fallbackAcc, fallbackCalId) = DeviceCalendarRepository.resolveSelection(
+            calendars = calendars,
+            preferredAccount = "missing@gmail.com",
+            currentSelectedAccount = null,
+            currentSelectedCalendarId = null
+        )
+        assertEquals("jan.kowalski@gmail.com", fallbackAcc)
+        assertEquals("1", fallbackCalId)
+    }
+
+    @Test
+    fun `GoogleCredentialAuthManager generates URL-safe nonce and parses JWT claims`() {
+        val nonce1 = com.example.data.calendar.GoogleCredentialAuthManager.generateSecureRandomNonce()
+        val nonce2 = com.example.data.calendar.GoogleCredentialAuthManager.generateSecureRandomNonce()
+        assertTrue(nonce1.length >= 22)
+        assertTrue(nonce1 != nonce2)
+        assertTrue(nonce1.none { it == '=' || it == '+' || it == '/' })
+
+        // {"email":"jan@zsme.pl","name":"Jan Kowalski","given_name":"Jan","sub":"12345"}
+        val payloadJson = """{"email":"jan@zsme.pl","name":"Jan Kowalski","given_name":"Jan","sub":"12345"}"""
+        val header = "eyJhbGciOiJSUzI1NiJ9"
+        val encodedPayload = encodeBase64UrlForTest(payloadJson.toByteArray(Charsets.UTF_8))
+        val fakeJwt = "$header.$encodedPayload.sig"
+
+        val claims = com.example.data.calendar.GoogleCredentialAuthManager.parseJwtClaims(fakeJwt)
+        assertEquals("jan@zsme.pl", claims.email)
+        assertEquals("Jan Kowalski", claims.name)
+        assertEquals("Jan", claims.givenName)
+        assertEquals("12345", claims.sub)
+
+        val emptyClaims = com.example.data.calendar.GoogleCredentialAuthManager.parseJwtClaims("invalid")
+        assertEquals("", emptyClaims.email)
+    }
+
+    @Test
+    fun `GoogleCredentialAuthManager formats SHA-1 colon hex and defines calendar scopes`() {
+        val sampleBytes = byteArrayOf(0x0A, 0x1B, 0x2C, 0xFF.toByte())
+        assertEquals(
+            "0A:1B:2C:FF",
+            com.example.data.calendar.GoogleCredentialAuthManager.formatSha1ColonHex(sampleBytes)
+        )
+        assertEquals(
+            "",
+            com.example.data.calendar.GoogleCredentialAuthManager.formatSha1ColonHex(byteArrayOf())
+        )
+        assertEquals(
+            "https://www.googleapis.com/auth/calendar",
+            com.example.data.calendar.GoogleCredentialAuthManager.CALENDAR_SCOPE_URL
+        )
+        assertEquals(
+            "oauth2:https://www.googleapis.com/auth/calendar",
+            com.example.data.calendar.GoogleCredentialAuthManager.GOOGLE_AUTH_UTIL_CALENDAR_SCOPE
+        )
+    }
+
+    private fun encodeBase64UrlForTest(bytes: ByteArray): String {
+        val alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+        val sb = StringBuilder()
+        var i = 0
+        while (i < bytes.size) {
+            val b0 = bytes[i].toInt() and 0xFF
+            val hasB1 = i + 1 < bytes.size
+            val hasB2 = i + 2 < bytes.size
+            val b1 = if (hasB1) bytes[i + 1].toInt() and 0xFF else 0
+            val b2 = if (hasB2) bytes[i + 2].toInt() and 0xFF else 0
+            val triple = (b0 shl 16) or (b1 shl 8) or b2
+            sb.append(alphabet[(triple ushr 18) and 0x3F])
+            sb.append(alphabet[(triple ushr 12) and 0x3F])
+            if (hasB1) sb.append(alphabet[(triple ushr 6) and 0x3F])
+            if (hasB2) sb.append(alphabet[triple and 0x3F])
+            i += 3
+        }
+        return sb.toString()
     }
 }

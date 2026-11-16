@@ -34,6 +34,15 @@ data class GoogleCalendarAccountInfo(
     val accessToken: String = ""
 )
 
+data class GoogleCredentialSession(
+    val email: String,
+    val displayName: String = "",
+    val givenName: String = "",
+    val profilePictureUrl: String? = null,
+    val idToken: String = "",
+    val calendarAccessToken: String = ""
+)
+
 data class TargetCalendarItem(
     val id: String,
     val name: String,

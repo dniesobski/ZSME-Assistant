@@ -20,6 +20,9 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
 import okhttp3.Cookie
 import okhttp3.CookieJar
 import okhttp3.Credentials
@@ -28,6 +31,7 @@ import okhttp3.HttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
+import org.jsoup.Jsoup
 import java.io.File
 import java.nio.charset.Charset
 import java.text.SimpleDateFormat
@@ -687,48 +691,136 @@ class ZsmePortalClient(
         }
     }
 
+    @Serializable
+    private data class GitHubReleaseDto(
+        @SerialName("tag_name") val tagName: String = "",
+        val name: String = "",
+        @SerialName("published_at") val publishedAt: String = "",
+        val assets: List<GitHubAssetDto> = emptyList()
+    )
+
+    @Serializable
+    private data class GitHubAssetDto(
+        val name: String = "",
+        val size: Long = 0L,
+        @SerialName("browser_download_url") val browserDownloadUrl: String = ""
+    )
+
+    private val updateJson = Json { ignoreUnknownKeys = true }
+
+    fun resolveGitHubReleaseApiUrl(repoUrl: String): String? {
+        val clean = repoUrl.trim().substringBefore('#').substringBefore('?')
+        val regex = Regex(
+            """^https?://(?:www\.)?github\.com/([^/]+)/([^/]+)/releases(?:/(latest)|/tag/([^/]+))?/?$""",
+            RegexOption.IGNORE_CASE
+        )
+        val match = regex.find(clean) ?: return null
+        val owner = match.groupValues[1]
+        val repo = match.groupValues[2]
+        val tag = match.groupValues[4]
+        return if (tag.isNotBlank()) {
+            "https://api.github.com/repos/$owner/$repo/releases/tags/$tag"
+        } else {
+            "https://api.github.com/repos/$owner/$repo/releases/latest"
+        }
+    }
+
+    fun parseGitHubReleaseJson(jsonBody: String): ApkCandidate? {
+        val dto = runCatching { updateJson.decodeFromString<GitHubReleaseDto>(jsonBody) }.getOrNull()
+            ?: return null
+        val apkAsset = dto.assets.firstOrNull { asset ->
+            asset.name.endsWith(".apk", ignoreCase = true) ||
+                asset.browserDownloadUrl.substringBefore('?').endsWith(".apk", ignoreCase = true)
+        } ?: return null
+
+        val extractedVersion = AppVersionHelper.extractVersionFromText(
+            "${dto.tagName} ${apkAsset.name} ${dto.name} ${apkAsset.browserDownloadUrl}"
+        )
+        return ApkCandidate(
+            fileName = apkAsset.name.ifBlank {
+                apkAsset.browserDownloadUrl.substringBefore('?').substringAfterLast('/').ifBlank { "ZSMEAssist.apk" }
+            },
+            downloadUrl = apkAsset.browserDownloadUrl,
+            versionName = extractedVersion,
+            lastModifiedHeader = dto.publishedAt,
+            lastModifiedMillis = parseIso8601UtcMillis(dto.publishedAt),
+            directoryDateText = dto.publishedAt,
+            contentLength = apkAsset.size
+        )
+    }
+
     suspend fun checkAppUpdateInRepo(
-        repoUrl: String = UserPreferences.DEFAULT_APP_UPDATE_URL,
+        repoUrl: String = UserPreferences.DEFAULT_GITHUB_APK_URL,
         currentVersionName: String,
         installedLastUpdateMillis: Long,
         prefs: UserPreferences
     ): Result<AppUpdateCheckResult> = withContext(Dispatchers.IO) {
         runCatching {
-            val cleanRepo = repoUrl.trim().ifBlank { UserPreferences.DEFAULT_APP_UPDATE_URL }
-            val probeReq = Request.Builder()
-                .url(cleanRepo)
-                .header("User-Agent", USER_AGENT)
-                .header("Accept-Language", "pl-PL,pl;q=0.9,en;q=0.8")
-                .get()
-                .build()
-
+            val cleanRepo = repoUrl.trim().ifBlank { UserPreferences.DEFAULT_GITHUB_APK_URL }
             var selectedCandidate: ApkCandidate? = null
-            client.newCall(probeReq).execute().use { resp ->
-                if (!resp.isSuccessful) {
-                    error("Repozytorium zwróciło kod HTTP ${resp.code}")
+
+            val cleanWithoutQuery = cleanRepo.substringBefore('?').substringBefore('#')
+            if (cleanWithoutQuery.endsWith(".apk", ignoreCase = true)) {
+                val fileName = cleanWithoutQuery.substringAfterLast('/').ifBlank { "ZSMEAssist.apk" }
+                selectedCandidate = ApkCandidate(
+                    fileName = fileName,
+                    downloadUrl = cleanRepo,
+                    versionName = AppVersionHelper.extractVersionFromText("$cleanRepo $fileName")
+                )
+            } else {
+                val githubApiUrl = resolveGitHubReleaseApiUrl(cleanRepo)
+                if (githubApiUrl != null) {
+                    val apiReq = Request.Builder()
+                        .url(githubApiUrl)
+                        .header("User-Agent", USER_AGENT)
+                        .header("Accept", "application/vnd.github+json")
+                        .get()
+                        .build()
+                    selectedCandidate = runCatching {
+                        client.newCall(apiReq).execute().use { resp ->
+                            if (!resp.isSuccessful) return@use null
+                            parseGitHubReleaseJson(resp.body?.string().orEmpty())
+                        }
+                    }.getOrNull()
                 }
-                val finalUrl = resp.request.url.toString()
-                val contentType = resp.header("Content-Type").orEmpty()
-                if (contentType.contains("android.package-archive", ignoreCase = true) ||
-                    finalUrl.substringBefore('?').endsWith(".apk", ignoreCase = true)
-                ) {
-                    val fileName = finalUrl.substringBefore('?').substringAfterLast('/').ifBlank { "zsme-update.apk" }
-                    val lastMod = resp.header("Last-Modified").orEmpty()
-                    selectedCandidate = ApkCandidate(
-                        fileName = fileName,
-                        downloadUrl = finalUrl,
-                        versionName = AppVersionHelper.extractVersionFromText(fileName),
-                        lastModifiedHeader = lastMod,
-                        lastModifiedMillis = parseHttpDateMillis(lastMod),
-                        eTag = resp.header("ETag").orEmpty(),
-                        contentLength = resp.header("Content-Length")?.toLongOrNull() ?: 0L
-                    )
-                } else {
-                    val bodyBytes = resp.body?.bytes() ?: ByteArray(0)
-                    val html = decodeHtmlBytes(bodyBytes, resp.body?.contentType()?.charset(null))
-                    val baseForLinks = if (finalUrl.endsWith("/")) finalUrl else "$finalUrl/"
-                    val list = ZsmeHtmlParser.parseAppRepositoryApks(html, baseForLinks)
-                    selectedCandidate = list.firstOrNull()
+
+                if (selectedCandidate == null) {
+                    val probeReq = Request.Builder()
+                        .url(cleanRepo)
+                        .header("User-Agent", USER_AGENT)
+                        .header("Accept-Language", "pl-PL,pl;q=0.9,en;q=0.8")
+                        .get()
+                        .build()
+
+                    client.newCall(probeReq).execute().use { resp ->
+                        if (!resp.isSuccessful) {
+                            error("Repozytorium zwróciło kod HTTP ${resp.code}")
+                        }
+                        val finalUrl = resp.request.url.toString()
+                        val contentType = resp.header("Content-Type").orEmpty()
+                        if (contentType.contains("android.package-archive", ignoreCase = true) ||
+                            finalUrl.substringBefore('?').endsWith(".apk", ignoreCase = true)
+                        ) {
+                            val fileName = finalUrl.substringBefore('?').substringAfterLast('/').ifBlank { "zsme-update.apk" }
+                            val lastMod = resp.header("Last-Modified").orEmpty()
+                            selectedCandidate = ApkCandidate(
+                                fileName = fileName,
+                                downloadUrl = cleanRepo,
+                                versionName = AppVersionHelper.extractVersionFromText("$cleanRepo $finalUrl $fileName"),
+                                lastModifiedHeader = lastMod,
+                                lastModifiedMillis = parseHttpDateMillis(lastMod),
+                                eTag = resp.header("ETag").orEmpty(),
+                                contentLength = resp.header("Content-Length")?.toLongOrNull() ?: 0L
+                            )
+                        } else {
+                            val bodyBytes = resp.body?.bytes() ?: ByteArray(0)
+                            val html = decodeHtmlBytes(bodyBytes, resp.body?.contentType()?.charset(null))
+                            val baseForLinks = if (finalUrl.endsWith("/")) finalUrl else "$finalUrl/"
+                            val directList = ZsmeHtmlParser.parseAppRepositoryApks(html, baseForLinks)
+                            selectedCandidate = directList.firstOrNull()
+                                ?: fetchGitHubExpandedAssetsCandidate(html, baseForLinks)
+                        }
+                    }
                 }
             }
 
@@ -776,7 +868,7 @@ class ZsmePortalClient(
                 changedDateVsStored || firstCheckNewerBuild ->
                     "Wykryto nowszą datę modyfikacji pliku APK (${remoteLastMod.ifBlank { "nowy plik" }})."
                 changedFileOrUrl || changedETagOrSize ->
-                    "Wykryto nowy plik APK na serwerze (${enriched.fileName})."
+                    "Wykryto nowy plik APK w repozytorium (${enriched.fileName})."
                 else ->
                     "Masz najnowszą wersję aplikacji (${enriched.versionName.ifBlank { currentVersionName }})."
             }
@@ -788,6 +880,28 @@ class ZsmePortalClient(
                 currentVersionName = currentVersionName
             )
         }
+    }
+
+    private fun fetchGitHubExpandedAssetsCandidate(html: String, baseUrl: String): ApkCandidate? {
+        val doc = Jsoup.parse(html, baseUrl)
+        val fragmentUrls = doc.select("include-fragment[src]")
+            .mapNotNull { it.absUrl("src").takeIf { url -> url.contains("expanded_assets", ignoreCase = true) } }
+        for (fragUrl in fragmentUrls) {
+            val fragReq = Request.Builder()
+                .url(fragUrl)
+                .header("User-Agent", USER_AGENT)
+                .get()
+                .build()
+            val found = runCatching {
+                client.newCall(fragReq).execute().use { resp ->
+                    if (!resp.isSuccessful) return@use null
+                    val fragHtml = decodeHtmlBytes(resp.body?.bytes() ?: ByteArray(0), resp.body?.contentType()?.charset(null))
+                    ZsmeHtmlParser.parseAppRepositoryApks(fragHtml, baseUrl).firstOrNull()
+                }
+            }.getOrNull()
+            if (found != null) return found
+        }
+        return null
     }
 
     suspend fun downloadApkToCache(
@@ -835,6 +949,18 @@ class ZsmePortalClient(
                     }
                 }
             }
+
+            // Verify APK ZIP magic bytes ('P', 'K') so HTML error pages never reach PackageInstaller
+            val validApkHeader = outFile.length() > 100L && runCatching {
+                outFile.inputStream().use { stream ->
+                    stream.read() == 0x50 && stream.read() == 0x4B
+                }
+            }.getOrDefault(false)
+            if (!validApkHeader) {
+                runCatching { outFile.delete() }
+                error("Pobrany plik nie jest prawidłowym instalatorem APK.")
+            }
+
             onProgress(100)
             outFile
         }
@@ -856,9 +982,10 @@ class ZsmePortalClient(
                 candidate.copy(
                     lastModifiedHeader = lastMod.ifBlank { candidate.lastModifiedHeader },
                     lastModifiedMillis = parseHttpDateMillis(lastMod).takeIf { it > 0L }
+                        ?: candidate.lastModifiedMillis.takeIf { it > 0L }
                         ?: parseDirectoryDateMillis(candidate.directoryDateText),
-                    eTag = eTag,
-                    contentLength = len
+                    eTag = eTag.ifBlank { candidate.eTag },
+                    contentLength = if (len > 0L) len else candidate.contentLength
                 )
             }
         }.getOrNull()
@@ -873,22 +1000,32 @@ class ZsmePortalClient(
                 .get()
                 .build()
             client.newCall(getReq).execute().use { resp ->
+                if (!resp.isSuccessful) return@use null
                 val lastMod = resp.header("Last-Modified").orEmpty()
                 val eTag = resp.header("ETag").orEmpty()
                 val len = resp.header("Content-Length")?.toLongOrNull() ?: 0L
                 candidate.copy(
                     lastModifiedHeader = lastMod.ifBlank { candidate.lastModifiedHeader },
                     lastModifiedMillis = parseHttpDateMillis(lastMod).takeIf { it > 0L }
+                        ?: candidate.lastModifiedMillis.takeIf { it > 0L }
                         ?: parseDirectoryDateMillis(candidate.directoryDateText),
-                    eTag = eTag,
-                    contentLength = len
+                    eTag = eTag.ifBlank { candidate.eTag },
+                    contentLength = if (len > 0L) len else candidate.contentLength
                 )
             }
-        }.getOrElse {
-            candidate.copy(
-                lastModifiedMillis = parseDirectoryDateMillis(candidate.directoryDateText)
-            )
-        }
+        }.getOrNull() ?: candidate.copy(
+            lastModifiedMillis = candidate.lastModifiedMillis.takeIf { it > 0L }
+                ?: parseDirectoryDateMillis(candidate.directoryDateText)
+        )
+    }
+
+    private fun parseIso8601UtcMillis(raw: String): Long {
+        if (raw.isBlank()) return 0L
+        return runCatching {
+            SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US).apply {
+                timeZone = TimeZone.getTimeZone("GMT")
+            }.parse(raw.trim())?.time ?: 0L
+        }.getOrDefault(0L)
     }
 
     private fun parseHttpDateMillis(raw: String): Long {
@@ -896,7 +1033,8 @@ class ZsmePortalClient(
         val patterns = listOf(
             "EEE, dd MMM yyyy HH:mm:ss zzz",
             "EEEE, dd-MMM-yy HH:mm:ss zzz",
-            "EEE MMM d HH:mm:ss yyyy"
+            "EEE MMM d HH:mm:ss yyyy",
+            "yyyy-MM-dd'T'HH:mm:ss'Z'"
         )
         for (pattern in patterns) {
             val parsed = runCatching {

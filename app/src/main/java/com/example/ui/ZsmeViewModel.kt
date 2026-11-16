@@ -6,9 +6,11 @@ import androidx.lifecycle.viewModelScope
 import com.example.BuildConfig
 import com.example.ZsmeApplication
 import com.example.data.ZsmeRepository
+import com.example.data.calendar.GoogleCredentialAuthManager
 import com.example.data.model.ApkCandidate
 import com.example.data.model.AppUpdateCheckResult
 import com.example.data.model.ClassTimetable
+import com.example.data.model.GoogleCredentialSession
 import com.example.data.model.ScheduleFilterMatcher
 import com.example.data.model.SchoolClass
 import com.example.data.model.StudentGroup
@@ -90,7 +92,9 @@ data class ZsmeUiState(
     val activeMeshChannel: String = "#ogólny",
     val myMeshNodeId: String = "",
     // App update state
-    val appUpdateState: AppUpdateUiState = AppUpdateUiState()
+    val appUpdateState: AppUpdateUiState = AppUpdateUiState(),
+    // Google Credential Manager session
+    val googleCredentialSession: GoogleCredentialSession? = null
 ) {
     val activeDisplayedTimetable: ClassTimetable?
         get() = if (preferences.userRole == UserRole.TEACHER || selectedTimetableCategory == TimetableCategory.CLASS) {
@@ -159,7 +163,8 @@ private data class TransientUiFlags(
     val selectedTeacherOrRoom: TimetableTarget? = null,
     val targetTimetable: ClassTimetable? = null,
     val activeMeshChannel: String = "#ogólny",
-    val selectedMeshRecipientNick: String = ""
+    val selectedMeshRecipientNick: String = "",
+    val googleCredentialSession: GoogleCredentialSession? = null
 )
 
 private data class MeshLiveSnapshot(
@@ -272,7 +277,8 @@ class ZsmeViewModel(application: Application) : AndroidViewModel(application) {
             meshMessages = mesh.messages,
             activeMeshChannel = flags.activeMeshChannel,
             myMeshNodeId = meshManager.myNodeId,
-            appUpdateState = updateState
+            appUpdateState = updateState,
+            googleCredentialSession = flags.googleCredentialSession
         )
     }.stateIn(
         scope = viewModelScope,
@@ -944,9 +950,24 @@ class ZsmeViewModel(application: Application) : AndroidViewModel(application) {
 
     // --- App Repository Update actions ---
 
-    fun checkForAppUpdate() {
+    fun updateAppUpdateUrl(url: String) {
+        val clean = url.trim().ifBlank { UserPreferences.DEFAULT_GITHUB_APK_URL }
+        viewModelScope.launch {
+            prefsRepo.setAppUpdateUrl(clean)
+            transientFlags.update { it.copy(snackbarMessage = "Zapisano adres aktualizacji: $clean") }
+        }
+    }
+
+    fun checkForAppUpdate(repoUrl: String? = null, forceDownload: Boolean = false) {
         if (appUpdateFlow.value.isChecking || appUpdateFlow.value.isDownloading) return
         viewModelScope.launch {
+            val effectiveUrl = repoUrl?.trim()?.takeIf { it.isNotBlank() }
+                ?: uiState.value.preferences.appUpdateUrl.trim().ifBlank { UserPreferences.DEFAULT_GITHUB_APK_URL }
+
+            if (effectiveUrl != uiState.value.preferences.appUpdateUrl) {
+                prefsRepo.setAppUpdateUrl(effectiveUrl)
+            }
+
             appUpdateFlow.update {
                 it.copy(
                     isChecking = true,
@@ -954,7 +975,7 @@ class ZsmeViewModel(application: Application) : AndroidViewModel(application) {
                     downloadProgress = 0
                 )
             }
-            val result = repository.checkAppUpdate(UserPreferences.DEFAULT_APP_UPDATE_URL)
+            val result = repository.checkAppUpdate(effectiveUrl)
             result.onSuccess { checkResult ->
                 appUpdateFlow.update {
                     it.copy(
@@ -964,9 +985,9 @@ class ZsmeViewModel(application: Application) : AndroidViewModel(application) {
                     )
                 }
                 val candidate = checkResult.candidate
-                if (checkResult.updateAvailable && candidate != null) {
+                if (candidate != null && (checkResult.updateAvailable || forceDownload)) {
                     transientFlags.update {
-                        it.copy(snackbarMessage = "Znaleziono nową wersję (${candidate.fileName}) — pobieranie aktualizacji...")
+                        it.copy(snackbarMessage = "Pobieranie pliku ${candidate.fileName}...")
                     }
                     downloadAndPrepareUpdate(candidate)
                 } else {
@@ -976,7 +997,7 @@ class ZsmeViewModel(application: Application) : AndroidViewModel(application) {
                     transientFlags.update {
                         it.copy(
                             snackbarMessage = if (candidate == null) {
-                                "Nie znaleziono pliku APK w ${UserPreferences.DEFAULT_APP_UPDATE_URL}"
+                                "Nie znaleziono pliku APK pod adresem $effectiveUrl"
                             } else {
                                 "Aplikacja jest aktualna (${BuildConfig.VERSION_NAME})"
                             }
@@ -984,7 +1005,7 @@ class ZsmeViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
             }.onFailure { err ->
-                val msg = err.message ?: "Nie udało się sprawdzić aktualizacji w ${UserPreferences.DEFAULT_APP_UPDATE_URL}"
+                val msg = err.message ?: "Nie udało się sprawdzić aktualizacji pod adresem $effectiveUrl"
                 appUpdateFlow.update {
                     it.copy(
                         isChecking = false,
@@ -1050,6 +1071,24 @@ class ZsmeViewModel(application: Application) : AndroidViewModel(application) {
         transientFlags.update { it.copy(isClassPickerOpen = open) }
         if (open && uiState.value.availableClasses.isEmpty()) {
             refreshClassList()
+        }
+    }
+
+    fun setGoogleCredentialSession(session: GoogleCredentialSession?) {
+        transientFlags.update { it.copy(googleCredentialSession = session) }
+    }
+
+    fun updateGoogleCalendarAccessToken(accessToken: String) {
+        transientFlags.update { flags ->
+            val current = flags.googleCredentialSession ?: return@update flags
+            flags.copy(googleCredentialSession = current.copy(calendarAccessToken = accessToken))
+        }
+    }
+
+    fun signOutGoogleCredential() {
+        viewModelScope.launch {
+            GoogleCredentialAuthManager.signOut(app)
+            transientFlags.update { it.copy(googleCredentialSession = null) }
         }
     }
 

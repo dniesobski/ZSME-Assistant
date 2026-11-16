@@ -880,4 +880,210 @@ class ZsmeParserAndMatcherTest {
         assertFalse(UserPreferences.isValidTeacherAccessPassword("zsme"))
         assertFalse(UserPreferences.isValidTeacherAccessPassword("ZSMEEDUKACJA"))
     }
+
+    @Test
+    fun `parseSubstitutionPeriods and resolveWeekdayIndex handle ranges, groups, and Polish dates`() {
+        assertEquals(setOf(1, 2), ScheduleFilterMatcher.parseSubstitutionPeriods("1-2"))
+        assertEquals(setOf(6, 7, 8), ScheduleFilterMatcher.parseSubstitutionPeriods("6–8"))
+        assertEquals(setOf(1, 2), ScheduleFilterMatcher.parseSubstitutionPeriods("1, 2 (1/2)"))
+        assertEquals(setOf(3), ScheduleFilterMatcher.parseSubstitutionPeriods("3 (gr. 2)"))
+        assertEquals(emptySet<Int>(), ScheduleFilterMatcher.parseSubstitutionPeriods(""))
+
+        // 13.11.2026 is Friday (dayIndex = 4), 16.11.2026 is Monday (dayIndex = 0)
+        assertEquals(4, ScheduleFilterMatcher.resolveWeekdayIndex("Zastępstwa 13.11.2026"))
+        assertEquals(0, ScheduleFilterMatcher.resolveWeekdayIndex("Plan zastępstw 16.11.2026"))
+        assertEquals(1, ScheduleFilterMatcher.resolveWeekdayIndex("Zastępstwa na wtorek"))
+    }
+
+    @Test
+    fun `resolveClassDaySubstitutions crosses out late arrival and early finish lessons while keeping teacher replacements active`() {
+        val lessons = listOf(
+            com.example.data.model.LessonEntry(1, "8:00-8:45", "Fizyka", "JK", "204"),
+            com.example.data.model.LessonEntry(2, "8:50-9:35", "Matematyka", "AB", "105"),
+            com.example.data.model.LessonEntry(3, "9:50-10:35", "Informatyka", "MK", "301"),
+            com.example.data.model.LessonEntry(4, "10:45-11:30", "J. polski", "EW", "112"),
+            com.example.data.model.LessonEntry(5, "11:45-12:30", "Historia", "KZ", "108")
+        )
+
+        val html = """
+            <html><body>
+              <h2>Zastępstwa na piątek 13.11.2026</h2>
+              <table>
+                <tr><th>Lekcja</th><th>Klasa</th><th>Nieobecny</th><th>Przedmiot</th><th>Zastępstwo</th><th>Sala</th></tr>
+                <tr><td>1</td><td>2TI</td><td>Jan Kowalski</td><td>Fizyka</td><td>Klasa przychodzi później - uczniowie zwolnieni</td><td>-</td></tr>
+                <tr><td>3</td><td>2TI</td><td>M. Kaczmarek</td><td>Informatyka</td><td>Anna Nowak</td><td>302</td></tr>
+                <tr><td>5</td><td>2TI</td><td>K. Zieliński</td><td>Historia</td><td>Klasa kończy szybciej</td><td>-</td></tr>
+              </table>
+            </body></html>
+        """.trimIndent()
+
+        val snapshot = ZsmeHtmlParser.parseSubstitutions(html, "https://sekretariat.zsme.pl/tv.php")
+        assertEquals(3, snapshot.items.size)
+        assertTrue(snapshot.items[0].isCancellation)
+        assertFalse(snapshot.items[1].isCancellation)
+        assertTrue(snapshot.items[2].isCancellation)
+
+        val resolution = ScheduleFilterMatcher.resolveClassDaySubstitutions(
+            dayLessons = lessons,
+            dayIndex = 4, // Friday
+            todayWeekdayIndex = 0, // Even if today is Monday, snapshot matches Friday
+            snapshot = snapshot,
+            className = "2TI",
+            selectedGroup = StudentGroup.ALL,
+            customGroupFilter = ""
+        )
+
+        assertEquals(2, resolution.cancelledCount)
+        assertEquals(1, resolution.activeSubCount)
+        assertTrue(resolution.matchByLessonIndex[0]?.isCancellation == true)
+        assertEquals(null, resolution.matchByLessonIndex[1])
+        assertTrue(resolution.matchByLessonIndex[2]?.isCancellation == false)
+        assertEquals("Anna Nowak", resolution.matchByLessonIndex[2]?.substituteTeacher)
+        assertEquals(null, resolution.matchByLessonIndex[3])
+        assertTrue(resolution.matchByLessonIndex[4]?.isCancellation == true)
+
+        val banner = resolution.summaryBanner.orEmpty()
+        assertTrue(banner.contains("przychodzi później", ignoreCase = true))
+        assertTrue(banner.contains("kończy szybciej", ignoreCase = true))
+    }
+
+    @Test
+    fun `resolveClassDaySubstitutions handles arrival and finish boundaries from periods, ranges, and announcements`() {
+        val lessons = listOf(
+            com.example.data.model.LessonEntry(1, "8:00-8:45", "WF", "JK", "SG1"),
+            com.example.data.model.LessonEntry(2, "8:50-9:35", "Matematyka", "AB", "105"),
+            com.example.data.model.LessonEntry(3, "9:50-10:35", "Informatyka", "MK", "301"),
+            com.example.data.model.LessonEntry(4, "10:45-11:30", "J. polski", "EW", "112"),
+            com.example.data.model.LessonEntry(5, "11:45-12:30", "Angielski", "KZ", "108"),
+            com.example.data.model.LessonEntry(6, "12:40-13:25", "Chemia", "MN", "210")
+        )
+
+        val snapshot = com.example.data.model.SubstitutionsSnapshot(
+            dateHeading = "Zastępstwa na wtorek",
+            items = listOf(
+                SubstitutionItem(
+                    id = "s1",
+                    className = "2TI",
+                    period = "3",
+                    absentTeacher = "JK",
+                    note = "Klasa przychodzi na 3 lekcję",
+                    isCancellation = true
+                )
+            ),
+            announcements = listOf(
+                "Klasa 2TI kończy po 4 lekcji z powodu nieobecności nauczycieli."
+            )
+        )
+
+        val resolution = ScheduleFilterMatcher.resolveClassDaySubstitutions(
+            dayLessons = lessons,
+            dayIndex = 1, // Tuesday
+            todayWeekdayIndex = 1,
+            snapshot = snapshot,
+            className = "2TI",
+            selectedGroup = StudentGroup.ALL,
+            customGroupFilter = ""
+        )
+
+        // Lessons 1 and 2 cancelled (< 3); lesson 3 stays active; lessons 5 and 6 cancelled (> 4)
+        assertTrue(resolution.matchByLessonIndex[0]?.isCancellation == true)
+        assertTrue(resolution.matchByLessonIndex[1]?.isCancellation == true)
+        assertEquals(null, resolution.matchByLessonIndex[2])
+        assertEquals(null, resolution.matchByLessonIndex[3])
+        assertTrue(resolution.matchByLessonIndex[4]?.isCancellation == true)
+        assertTrue(resolution.matchByLessonIndex[5]?.isCancellation == true)
+        assertEquals(4, resolution.cancelledCount)
+    }
+
+    @Test
+    fun `resolveClassDaySubstitutions disambiguates multiple groups in same period using groupTag and absentTeacher`() {
+        val lessons = listOf(
+            com.example.data.model.LessonEntry(1, "8:00-8:45", "J. angielski", "AB", "102", groupTag = "1/2"),
+            com.example.data.model.LessonEntry(1, "8:00-8:45", "J. angielski", "CD", "105", groupTag = "2/2"),
+            com.example.data.model.LessonEntry(2, "8:50-9:35", "Matematyka", "JK", "204")
+        )
+
+        val snapshot = com.example.data.model.SubstitutionsSnapshot(
+            dateHeading = "Zastępstwa",
+            items = listOf(
+                SubstitutionItem(
+                    id = "g1",
+                    className = "2TI (1/2)",
+                    period = "1",
+                    absentTeacher = "AB",
+                    substituteTeacher = "Odwołane",
+                    groupTag = "1/2",
+                    isCancellation = true
+                )
+            )
+        )
+
+        val resolution = ScheduleFilterMatcher.resolveClassDaySubstitutions(
+            dayLessons = lessons,
+            dayIndex = 0,
+            todayWeekdayIndex = 0,
+            snapshot = snapshot,
+            className = "2TI",
+            selectedGroup = StudentGroup.ALL,
+            customGroupFilter = ""
+        )
+
+        assertTrue(resolution.matchByLessonIndex[0]?.isCancellation == true)
+        assertEquals(null, resolution.matchByLessonIndex[1])
+        assertEquals(null, resolution.matchByLessonIndex[2])
+    }
+
+    @Test
+    fun `GitHub APK URL and Releases API parsing extract version and download candidate`() {
+        val githubApkUrl = "https://github.com/dniesobski/ZSME-Assistant/releases/download/v1.0.6/ZSMEAssist.apk"
+        assertEquals(githubApkUrl, UserPreferences.DEFAULT_GITHUB_APK_URL)
+        assertEquals(
+            "1.0.6",
+            com.example.data.model.AppVersionHelper.extractVersionFromText(githubApkUrl)
+        )
+        assertTrue(com.example.data.model.AppVersionHelper.compareVersions("1.0.6", "1.0") > 0)
+
+        val client = com.example.data.network.ZsmePortalClient()
+        assertEquals(
+            "https://api.github.com/repos/dniesobski/ZSME-Assistant/releases/latest",
+            client.resolveGitHubReleaseApiUrl("https://github.com/dniesobski/ZSME-Assistant/releases/latest")
+        )
+        assertEquals(
+            "https://api.github.com/repos/dniesobski/ZSME-Assistant/releases/tags/v1.0.6",
+            client.resolveGitHubReleaseApiUrl("https://github.com/dniesobski/ZSME-Assistant/releases/tag/v1.0.6")
+        )
+        assertEquals(null, client.resolveGitHubReleaseApiUrl("https://sekretariat.zsme.pl/app"))
+
+        val releaseJson = """
+            {
+              "tag_name": "v1.0.6",
+              "name": "ZSME Assistant v1.0.6",
+              "published_at": "2026-11-16T08:00:00Z",
+              "assets": [
+                {
+                  "name": "ZSMEAssist.apk",
+                  "size": 12345678,
+                  "browser_download_url": "$githubApkUrl"
+                }
+              ]
+            }
+        """.trimIndent()
+        val parsed = client.parseGitHubReleaseJson(releaseJson)
+        assertNotNull(parsed)
+        assertEquals("ZSMEAssist.apk", parsed!!.fileName)
+        assertEquals("1.0.6", parsed.versionName)
+        assertEquals(githubApkUrl, parsed.downloadUrl)
+        assertEquals(12345678L, parsed.contentLength)
+        assertTrue(parsed.lastModifiedMillis > 0L)
+
+        val fragmentHtml = """
+            <ul>
+              <li><a href="/dniesobski/ZSME-Assistant/releases/download/v1.0.6/ZSMEAssist.apk">ZSMEAssist.apk</a></li>
+            </ul>
+        """.trimIndent()
+        val htmlCandidates = ZsmeHtmlParser.parseAppRepositoryApks(fragmentHtml, "https://github.com/dniesobski/ZSME-Assistant/releases/latest")
+        assertEquals(1, htmlCandidates.size)
+        assertEquals("1.0.6", htmlCandidates.first().versionName)
+        assertEquals(githubApkUrl, htmlCandidates.first().downloadUrl)
+    }
 }

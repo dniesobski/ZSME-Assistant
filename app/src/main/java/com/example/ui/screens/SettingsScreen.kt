@@ -118,7 +118,8 @@ fun SettingsScreen(
     onSendTestNotification: () -> Unit,
     onSelectThemeMode: (ThemeMode) -> Unit,
     onToggleDynamicColor: (Boolean) -> Unit,
-    onCheckAppUpdate: () -> Unit,
+    onSaveAppUpdateUrl: (String) -> Unit,
+    onCheckAppUpdate: (repoUrl: String?, forceDownload: Boolean) -> Unit,
     onInstallDownloadedApk: () -> Unit,
     onConsumePendingApkInstall: () -> Unit,
     onOpenSekretariatWeb: () -> Unit,
@@ -133,6 +134,9 @@ fun SettingsScreen(
     var teacherFullNameInput by remember(prefs.teacherFullName) { mutableStateOf(prefs.teacherFullName) }
     var substitutionsUrlInput by remember(prefs.substitutionsUrl) { mutableStateOf(prefs.substitutionsUrl) }
     var planUrlInput by remember(prefs.planUrl) { mutableStateOf(prefs.planUrl) }
+    var appUpdateUrlInput by remember(prefs.appUpdateUrl) {
+        mutableStateOf(prefs.appUpdateUrl.ifBlank { UserPreferences.DEFAULT_GITHUB_APK_URL })
+    }
     var customFilterInput by remember(prefs.customGroupFilter) { mutableStateOf(prefs.customGroupFilter) }
     var hasNotifPermission by remember { mutableStateOf(NotificationHelper.hasNotificationPermission(context)) }
     var pendingApkAfterUnknownSources by remember { mutableStateOf<String?>(null) }
@@ -617,10 +621,10 @@ fun SettingsScreen(
                 }
             }
 
-            // 3. Aktualizacja aplikacji z repozytorium APK
+            // 3. Aktualizacja aplikacji z GitHuba / repozytorium APK
             item(key = "app_update_card") {
                 SettingsSectionCard(
-                    title = "Aktualizacja aplikacji",
+                    title = "Aktualizacja aplikacji (GitHub / APK)",
                     icon = Icons.Filled.SystemUpdate
                 ) {
                     Text(
@@ -628,20 +632,48 @@ fun SettingsScreen(
                         style = MaterialTheme.typography.titleSmall
                     )
                     Text(
-                        text = "Repozytorium: ${UserPreferences.DEFAULT_APP_UPDATE_URL}",
+                        text = "Wybierz źródło aktualizacji lub wklej bezpośredni link do pliku .apk / wydania GitHub Releases:",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                    Text(
-                        text = "Sprawdza pojawienie się nowego pliku APK, zmianę wersji lub daty modyfikacji i automatycznie uruchamia instalację.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        val presets = listOf(
+                            "GitHub (v1.0.6)" to UserPreferences.DEFAULT_GITHUB_APK_URL,
+                            "GitHub (najnowsze)" to UserPreferences.DEFAULT_GITHUB_RELEASES_URL,
+                            "Serwer ZSME" to UserPreferences.DEFAULT_APP_UPDATE_URL
+                        )
+                        presets.forEach { (label, presetUrl) ->
+                            FilterChip(
+                                selected = appUpdateUrlInput.trim().equals(presetUrl, ignoreCase = true),
+                                onClick = {
+                                    appUpdateUrlInput = presetUrl
+                                    onSaveAppUpdateUrl(presetUrl)
+                                },
+                                label = { Text(label) },
+                                modifier = Modifier.minimumInteractiveComponentSize()
+                            )
+                        }
+                    }
+
+                    OutlinedTextField(
+                        value = appUpdateUrlInput,
+                        onValueChange = { appUpdateUrlInput = it },
+                        label = { Text("Link do aktualizacji (GitHub / APK)") },
+                        placeholder = { Text(UserPreferences.DEFAULT_GITHUB_APK_URL) },
+                        singleLine = true,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("app_update_url_input")
                     )
 
                     if (updateState.isChecking) {
                         LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                         Text(
-                            text = "Sprawdzanie repozytorium APK...",
+                            text = "Sprawdzanie dostępności pliku APK...",
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.primary
                         )
@@ -651,7 +683,7 @@ fun SettingsScreen(
                             modifier = Modifier.fillMaxWidth()
                         )
                         Text(
-                            text = "Pobieranie nowej wersji APK: ${updateState.downloadProgress}%",
+                            text = "Pobieranie pliku APK: ${updateState.downloadProgress}%",
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.primary
                         )
@@ -669,6 +701,10 @@ fun SettingsScreen(
                             val metaDetails = buildString {
                                 append("Plik: ${cand.fileName}")
                                 if (cand.versionName.isNotBlank()) append(" • v${cand.versionName}")
+                                if (cand.contentLength > 0L) {
+                                    val mb = cand.contentLength / (1024f * 1024f)
+                                    append(" • ${"%.1f".format(mb)} MB")
+                                }
                                 val dateInfo = cand.lastModifiedHeader.ifBlank { cand.directoryDateText }
                                 if (dateInfo.isNotBlank()) append(" • Data: $dateInfo")
                             }
@@ -693,7 +729,7 @@ fun SettingsScreen(
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         Button(
-                            onClick = onCheckAppUpdate,
+                            onClick = { onCheckAppUpdate(appUpdateUrlInput.trim(), false) },
                             enabled = !updateState.isChecking && !updateState.isDownloading,
                             modifier = Modifier
                                 .weight(1f)
@@ -726,6 +762,23 @@ fun SettingsScreen(
                                 Text("Zainstaluj")
                             }
                         }
+                    }
+
+                    OutlinedButton(
+                        onClick = { onCheckAppUpdate(appUpdateUrlInput.trim(), true) },
+                        enabled = !updateState.isChecking && !updateState.isDownloading && appUpdateUrlInput.isNotBlank(),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .minimumInteractiveComponentSize()
+                            .testTag("force_download_apk_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Link,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Pobierz i zainstaluj APK z podanego linku")
                     }
                 }
             }

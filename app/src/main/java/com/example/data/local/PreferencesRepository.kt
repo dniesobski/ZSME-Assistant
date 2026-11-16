@@ -62,6 +62,7 @@ class PreferencesRepository(private val context: Context) {
         val LAST_APK_LAST_MODIFIED = stringPreferencesKey("last_apk_last_modified")
         val LAST_APK_ETAG = stringPreferencesKey("last_apk_etag")
         val LAST_APK_CONTENT_LENGTH = longPreferencesKey("last_apk_content_length")
+        val APP_UPDATE_URL = stringPreferencesKey("app_update_url")
         val TEACHER_ADDITIONAL_SCHOOLS_JSON = stringPreferencesKey("teacher_additional_schools_json")
 
         val CACHED_CLASSES_JSON = stringPreferencesKey("cached_classes_json")
@@ -117,6 +118,8 @@ class PreferencesRepository(private val context: Context) {
             lastApkLastModified = prefs[Keys.LAST_APK_LAST_MODIFIED].orEmpty(),
             lastApkETag = prefs[Keys.LAST_APK_ETAG].orEmpty(),
             lastApkContentLength = prefs[Keys.LAST_APK_CONTENT_LENGTH] ?: 0L,
+            appUpdateUrl = prefs[Keys.APP_UPDATE_URL]?.takeIf { it.isNotBlank() }
+                ?: UserPreferences.DEFAULT_GITHUB_APK_URL,
             additionalSchools = extraSchools
         )
     }
@@ -296,6 +299,15 @@ class PreferencesRepository(private val context: Context) {
             prefs[Keys.LAST_APK_LAST_MODIFIED] = candidate.lastModifiedHeader.ifBlank { candidate.directoryDateText }
             prefs[Keys.LAST_APK_ETAG] = candidate.eTag
             prefs[Keys.LAST_APK_CONTENT_LENGTH] = candidate.contentLength
+        }
+    }
+
+    suspend fun setAppUpdateUrl(url: String) {
+        context.dataStore.edit { prefs ->
+            prefs[Keys.APP_UPDATE_URL] = normalizeHttpUrl(
+                url,
+                UserPreferences.DEFAULT_GITHUB_APK_URL
+            )
         }
     }
 

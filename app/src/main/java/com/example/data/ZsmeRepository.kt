@@ -265,7 +265,7 @@ class ZsmeRepository(
     }
 
     suspend fun checkAppUpdate(
-        repoUrl: String = UserPreferences.DEFAULT_APP_UPDATE_URL
+        repoUrl: String = UserPreferences.DEFAULT_GITHUB_APK_URL
     ): Result<AppUpdateCheckResult> {
         val prefs = preferencesRepository.getPreferencesSnapshot()
         val lastUpdateMillis = runCatching {

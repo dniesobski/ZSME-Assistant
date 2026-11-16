@@ -912,7 +912,7 @@ object ZsmeHtmlParser {
                 ?: ""
 
             val period = values.getOrNull(colPeriod).orEmpty()
-                .ifBlank { values.firstOrNull { it.matches(Regex("""^\d{1,2}\.?(\s*[-–]\s*\d{1,2})?(\s*\(.*\))?$""")) }.orEmpty() }
+                .ifBlank { values.firstOrNull { it.matches(Regex("""^\d{1,2}\.?(?:\s*[-–,;]\s*\d{1,2}\.?)*(?:\s*\(.*\))?$""")) }.orEmpty() }
 
             val absent = values.getOrNull(colAbsent).orEmpty().ifBlank { currentSectionTeacher }
             val subject = values.getOrNull(colSubject).orEmpty()
@@ -1129,7 +1129,10 @@ object ZsmeHtmlParser {
         outAnnouncements: MutableList<String>,
         outNotes: MutableList<String>
     ) {
-        val periodRegex = Regex("""(?:lekcja|lek\.?|godz\.?)\s*(\d{1,2})|^(\d{1,2})\.\s""", RegexOption.IGNORE_CASE)
+        val periodRegex = Regex(
+            """(?:lekcj[aei]?|lek\.?|godz\.?)\s*(\d{1,2}(?:\s*[-–,;]\s*\d{1,2})*)|^(\d{1,2}(?:\s*[-–,;]\s*\d{1,2})*)\.\s""",
+            RegexOption.IGNORE_CASE
+        )
 
         val candidateBlocks = doc.select("div.zastepstwo, div.substitution, div.card, div.item, div.row, div.entry, li, p, article")
         for ((idx, block) in candidateBlocks.withIndex()) {
@@ -1180,17 +1183,24 @@ object ZsmeHtmlParser {
         val body = doc.body() ?: return
         val text = cellTextWithBreaks(body)
         val lines = text.split("\n").map { it.trim() }.filter { it.length >= 4 }
+        val periodRegex = Regex(
+            """(?:lekcj[aei]?|lek\.?|godz\.?)\s*(\d{1,2}(?:\s*[-–,;]\s*\d{1,2})*)|^(\d{1,2}(?:\s*[-–,;]\s*\d{1,2})*)\.\s""",
+            RegexOption.IGNORE_CASE
+        )
         for ((idx, line) in lines.withIndex()) {
             if (line.equals(defaultDate, ignoreCase = true)) continue
             if (line.contains("klucz", ignoreCase = true) && line.contains("zaloguj", ignoreCase = true)) continue
             val classMatch = classTokenRegex.find(line)
-            if (classMatch != null && (line.contains("lekcj", ignoreCase = true) || isCancellationText(line) || line.contains("sal", ignoreCase = true))) {
+            if (classMatch != null && (periodRegex.containsMatchIn(line) || line.contains("lekcj", ignoreCase = true) || isCancellationText(line) || line.contains("sal", ignoreCase = true))) {
                 val cls = classMatch.groupValues[1].replace(" ", "").uppercase()
+                val pMatch = periodRegex.find(line)
+                val period = pMatch?.groupValues?.drop(1)?.firstOrNull { it.isNotBlank() }.orEmpty()
                 outItems.add(
                     SubstitutionItem(
                         id = sha256("raw|$defaultDate|$cls|$line|$idx"),
                         dateLabel = defaultDate,
                         className = cls,
+                        period = period,
                         subject = line,
                         groupTag = ScheduleFilterMatcher.detectGroupTag(line),
                         isCancellation = isCancellationText(line)
@@ -1206,15 +1216,8 @@ object ZsmeHtmlParser {
         }
     }
 
-    private fun isCancellationText(text: String): Boolean {
-        return text.contains("odwołan", ignoreCase = true) ||
-            text.contains("odwolan", ignoreCase = true) ||
-            text.contains("zwoln", ignoreCase = true) ||
-            text.contains("okienk", ignoreCase = true) ||
-            text.contains("brak zajęć", ignoreCase = true) ||
-            text.contains("brak zajec", ignoreCase = true) ||
-            text.contains("do domu", ignoreCase = true)
-    }
+    private fun isCancellationText(text: String): Boolean =
+        ScheduleFilterMatcher.isCancellationText(text)
 
     fun aggregateTeacherScheduleFromTimetables(
         teacherAbbr: String,
@@ -1415,7 +1418,7 @@ object ZsmeHtmlParser {
             val rowContext = a.closest("tr")?.text()?.trim()
                 ?: a.parent()?.text()?.trim()
                 ?: a.text().trim()
-            val extractedVersion = AppVersionHelper.extractVersionFromText("$fileName ${a.text()}")
+            val extractedVersion = AppVersionHelper.extractVersionFromText("$absUrl $fileName ${a.text()}")
             val dateText = dateRegex.find(rowContext)?.groupValues?.get(1).orEmpty()
 
             candidates[absUrl] = ApkCandidate(

@@ -24,6 +24,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -81,6 +82,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.example.data.model.GoogleCredentialSession
 import com.example.data.model.LessonEntry
 import com.example.data.model.ScheduleFilterMatcher
 import com.example.data.model.StudentGroup
@@ -114,6 +116,9 @@ fun TimetableScreen(
     onRefreshCatalog: () -> Unit,
     onOpenClassPicker: () -> Unit,
     onOpenTeacherSetup: () -> Unit,
+    onGoogleCredentialSignedIn: (GoogleCredentialSession?) -> Unit = {},
+    onGoogleCalendarAccessToken: (String) -> Unit = {},
+    onGoogleCredentialSignOut: () -> Unit = {},
     onOpenPortalWebView: (String?) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -157,7 +162,7 @@ fun TimetableScreen(
     }
     val onShowAllSchools: () -> Unit = { hiddenSchoolIdsList = emptyList() }
 
-    var isExportCalendarDialogOpen by remember { mutableStateOf(false) }
+    var isExportCalendarDialogOpen by rememberSaveable { mutableStateOf(false) }
 
     val filteredWeekLessons = remember(
         timetable,
@@ -204,6 +209,34 @@ fun TimetableScreen(
         todayWeekdayIndex != null
     } else {
         todayWeekdayIndex != null && effectiveDayIndex == todayWeekdayIndex
+    }
+
+    val classSubstitutionResolution = remember(
+        isTeacherMode,
+        category,
+        effectiveDayIndex,
+        todayWeekdayIndex,
+        filteredLessons,
+        uiState.substitutions,
+        timetable?.className,
+        prefs.selectedClassName,
+        prefs.selectedGroup,
+        prefs.customGroupFilter
+    ) {
+        if (!isTeacherMode && category == TimetableCategory.CLASS && effectiveDayIndex != null) {
+            ScheduleFilterMatcher.resolveClassDaySubstitutions(
+                dayLessons = filteredLessons,
+                dayIndex = effectiveDayIndex,
+                todayWeekdayIndex = todayWeekdayIndex,
+                snapshot = uiState.substitutions,
+                className = timetable?.className?.ifBlank { prefs.selectedClassName }
+                    ?: prefs.selectedClassName,
+                selectedGroup = prefs.selectedGroup,
+                customGroupFilter = prefs.customGroupFilter
+            )
+        } else {
+            ScheduleFilterMatcher.ClassDaySubstitutionResolution()
+        }
     }
 
     val activeWebUrl = if (isTeacherMode) {
@@ -569,15 +602,75 @@ fun TimetableScreen(
                         }
                     }
 
-                    items(
-                        items = filteredLessons,
-                        key = { "${isTeacherMode}_${category}_${effectiveDayIndex}_${it.schoolId}_${it.schoolColorIndex}_${it.period}_${it.subject}_${it.classGroupLabel}_${it.room}_${it.groupTag}" }
-                    ) { lesson ->
-                        val matchingSub = if ((isTeacherMode || category == TimetableCategory.CLASS) && isViewingToday) {
-                            uiState.myGroupSubstitutions.firstOrNull { sub ->
-                                sub.period.filter { ch -> ch.isDigit() }.toIntOrNull() == lesson.period
+                    val summaryBanner = classSubstitutionResolution.summaryBanner
+                    if (summaryBanner != null) {
+                        item(key = "class_sub_summary_$effectiveDayIndex") {
+                            val hasCancellations = classSubstitutionResolution.cancelledCount > 0
+                            Surface(
+                                shape = MaterialTheme.shapes.medium,
+                                color = if (hasCancellations) {
+                                    MaterialTheme.colorScheme.errorContainer
+                                } else {
+                                    MaterialTheme.colorScheme.tertiaryContainer
+                                },
+                                border = BorderStroke(
+                                    1.dp,
+                                    if (hasCancellations) {
+                                        MaterialTheme.colorScheme.error.copy(alpha = 0.45f)
+                                    } else {
+                                        MaterialTheme.colorScheme.tertiary.copy(alpha = 0.45f)
+                                    }
+                                ),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("class_substitution_summary_banner")
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = if (hasCancellations) Icons.Filled.Schedule else Icons.Filled.SwapHoriz,
+                                        contentDescription = null,
+                                        tint = if (hasCancellations) {
+                                            MaterialTheme.colorScheme.onErrorContainer
+                                        } else {
+                                            MaterialTheme.colorScheme.onTertiaryContainer
+                                        },
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                    Text(
+                                        text = summaryBanner,
+                                        style = MaterialTheme.typography.labelLarge,
+                                        color = if (hasCancellations) {
+                                            MaterialTheme.colorScheme.onErrorContainer
+                                        } else {
+                                            MaterialTheme.colorScheme.onTertiaryContainer
+                                        }
+                                    )
+                                }
                             }
-                        } else null
+                        }
+                    }
+
+                    itemsIndexed(
+                        items = filteredLessons,
+                        key = { idx, it -> "${idx}_${isTeacherMode}_${category}_${effectiveDayIndex}_${it.schoolId}_${it.schoolColorIndex}_${it.period}_${it.subject}_${it.classGroupLabel}_${it.room}_${it.groupTag}" }
+                    ) { index, lesson ->
+                        val matchingSub = when {
+                            !isTeacherMode && category == TimetableCategory.CLASS ->
+                                classSubstitutionResolution.matchByLessonIndex[index]
+                            isTeacherMode ->
+                                ScheduleFilterMatcher.findTeacherSubstitutionForLesson(
+                                    substitutions = uiState.myGroupSubstitutions,
+                                    dateHeading = uiState.substitutions?.dateHeading.orEmpty(),
+                                    lessonPeriod = lesson.period,
+                                    dayIndex = effectiveDayIndex,
+                                    todayWeekdayIndex = todayWeekdayIndex
+                                )
+                            else -> null
+                        }
 
                         val isCurrentNow = isViewingToday && isLessonActiveNow(lesson.timeRange)
 
@@ -622,6 +715,10 @@ fun TimetableScreen(
             filteredDayLessons = filteredWeekLessons,
             isTeacherMode = isTeacherMode,
             teacherSchools = teacherSchools,
+            credentialSession = uiState.googleCredentialSession,
+            onCredentialSignedIn = onGoogleCredentialSignedIn,
+            onAccessTokenGranted = onGoogleCalendarAccessToken,
+            onCredentialSignOut = onGoogleCredentialSignOut,
             onExportCompleted = { _ -> },
             onDismiss = { isExportCalendarDialogOpen = false }
         )
@@ -1406,6 +1503,10 @@ private fun LessonTimelineCard(
     showSchoolHighlight: Boolean = false,
     matchingSubstitution: SubstitutionItem?
 ) {
+    val isCancelled = matchingSubstitution?.isCancellation == true
+    val strikeDecoration = if (isCancelled) TextDecoration.LineThrough else TextDecoration.None
+    val effectiveCurrentNow = isCurrentNow && !isCancelled
+
     val schoolTokens = if (showSchoolHighlight && lesson.schoolColorIndex >= 0) {
         SchoolColorPalette.tokensForIndex(lesson.schoolColorIndex)
     } else {
@@ -1413,25 +1514,27 @@ private fun LessonTimelineCard(
     }
 
     val borderHighlight = when {
+        isCancelled -> MaterialTheme.colorScheme.error
         matchingSubstitution != null -> MaterialTheme.colorScheme.tertiary
-        isCurrentNow -> MaterialTheme.colorScheme.secondary
+        effectiveCurrentNow -> MaterialTheme.colorScheme.secondary
         schoolTokens != null -> schoolTokens.accent
         else -> MaterialTheme.colorScheme.primary.copy(alpha = 0.25f)
     }
 
     val cardContainerColor = when {
-        schoolTokens != null -> schoolTokens.container.copy(alpha = if (isCurrentNow) 0.62f else 0.34f)
-        isCurrentNow -> MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.35f)
+        isCancelled -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.48f)
+        schoolTokens != null -> schoolTokens.container.copy(alpha = if (effectiveCurrentNow) 0.62f else 0.34f)
+        effectiveCurrentNow -> MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.35f)
         else -> MaterialTheme.colorScheme.surface
     }
 
-    val cardBorder = if (schoolTokens != null) {
-        BorderStroke(
-            width = if (isCurrentNow) 2.dp else 1.5.dp,
-            color = if (isCurrentNow) MaterialTheme.colorScheme.secondary else schoolTokens.accent.copy(alpha = 0.75f)
+    val cardBorder = when {
+        isCancelled -> BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.45f))
+        schoolTokens != null -> BorderStroke(
+            width = if (effectiveCurrentNow) 2.dp else 1.5.dp,
+            color = if (effectiveCurrentNow) MaterialTheme.colorScheme.secondary else schoolTokens.accent.copy(alpha = 0.75f)
         )
-    } else {
-        null
+        else -> null
     }
 
     Card(
@@ -1441,7 +1544,13 @@ private fun LessonTimelineCard(
         shape = MaterialTheme.shapes.medium,
         border = cardBorder,
         colors = CardDefaults.cardColors(containerColor = cardContainerColor),
-        elevation = CardDefaults.cardElevation(defaultElevation = if (isCurrentNow || matchingSubstitution != null) 2.dp else 1.dp)
+        elevation = CardDefaults.cardElevation(
+            defaultElevation = when {
+                isCancelled -> 0.dp
+                effectiveCurrentNow || matchingSubstitution != null -> 2.dp
+                else -> 1.dp
+            }
+        )
     ) {
         Column(modifier = Modifier.fillMaxWidth()) {
             Row(
@@ -1458,7 +1567,8 @@ private fun LessonTimelineCard(
                         .clip(RoundedCornerShape(12.dp))
                         .background(
                             when {
-                                isCurrentNow -> MaterialTheme.colorScheme.secondary
+                                isCancelled -> MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.65f)
+                                effectiveCurrentNow -> MaterialTheme.colorScheme.secondary
                                 schoolTokens != null -> schoolTokens.container
                                 else -> MaterialTheme.colorScheme.surfaceVariant
                             }
@@ -1469,8 +1579,10 @@ private fun LessonTimelineCard(
                         text = "${lesson.period}",
                         style = MaterialTheme.typography.titleLarge,
                         fontWeight = FontWeight.Bold,
+                        textDecoration = strikeDecoration,
                         color = when {
-                            isCurrentNow -> MaterialTheme.colorScheme.onSecondary
+                            isCancelled -> MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.85f)
+                            effectiveCurrentNow -> MaterialTheme.colorScheme.onSecondary
                             schoolTokens != null -> schoolTokens.onContainer
                             else -> MaterialTheme.colorScheme.primary
                         }
@@ -1480,8 +1592,10 @@ private fun LessonTimelineCard(
                             text = lesson.timeRange.replace("-", "\n"),
                             style = MaterialTheme.typography.labelSmall,
                             textAlign = TextAlign.Center,
+                            textDecoration = strikeDecoration,
                             color = when {
-                                isCurrentNow -> MaterialTheme.colorScheme.onSecondary
+                                isCancelled -> MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.75f)
+                                effectiveCurrentNow -> MaterialTheme.colorScheme.onSecondary
                                 schoolTokens != null -> schoolTokens.onContainer.copy(alpha = 0.85f)
                                 else -> MaterialTheme.colorScheme.onSurfaceVariant
                             }
@@ -1501,10 +1615,28 @@ private fun LessonTimelineCard(
                         Text(
                             text = lesson.subject.ifBlank { lesson.rawText },
                             style = MaterialTheme.typography.titleMedium,
-                            color = MaterialTheme.colorScheme.onSurface,
+                            textDecoration = strikeDecoration,
+                            color = if (isCancelled) {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            } else {
+                                MaterialTheme.colorScheme.onSurface
+                            },
                             modifier = Modifier.weight(1f)
                         )
-                        if (isCurrentNow) {
+                        if (isCancelled) {
+                            Surface(
+                                shape = RoundedCornerShape(6.dp),
+                                color = MaterialTheme.colorScheme.errorContainer
+                            ) {
+                                Text(
+                                    text = "ODWOŁANE",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onErrorContainer,
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                )
+                            }
+                        } else if (effectiveCurrentNow) {
                             Surface(
                                 shape = RoundedCornerShape(6.dp),
                                 color = MaterialTheme.colorScheme.secondary
@@ -1544,6 +1676,7 @@ private fun LessonTimelineCard(
                                         text = lesson.schoolName,
                                         style = MaterialTheme.typography.labelSmall,
                                         fontWeight = FontWeight.SemiBold,
+                                        textDecoration = strikeDecoration,
                                         color = schoolTokens.onContainer
                                     )
                                 }
@@ -1557,6 +1690,7 @@ private fun LessonTimelineCard(
                                 Text(
                                     text = "kl. ${lesson.classGroupLabel}",
                                     style = MaterialTheme.typography.labelSmall,
+                                    textDecoration = strikeDecoration,
                                     color = MaterialTheme.colorScheme.onPrimaryContainer,
                                     modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                                 )
@@ -1570,13 +1704,14 @@ private fun LessonTimelineCard(
                                 Icon(
                                     imageVector = Icons.Filled.PersonOutline,
                                     contentDescription = "Nauczyciel",
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = if (isCancelled) 0.7f else 1f),
                                     modifier = Modifier.size(15.dp)
                                 )
                                 Text(
                                     text = lesson.teacher,
                                     style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    textDecoration = strikeDecoration,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = if (isCancelled) 0.75f else 1f)
                                 )
                             }
                         }
@@ -1588,13 +1723,22 @@ private fun LessonTimelineCard(
                                 Icon(
                                     imageVector = Icons.Filled.Room,
                                     contentDescription = "Sala",
-                                    tint = schoolTokens?.accent ?: MaterialTheme.colorScheme.primary,
+                                    tint = if (isCancelled) {
+                                        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                                    } else {
+                                        schoolTokens?.accent ?: MaterialTheme.colorScheme.primary
+                                    },
                                     modifier = Modifier.size(15.dp)
                                 )
                                 Text(
                                     text = "s. ${lesson.room}",
                                     style = MaterialTheme.typography.labelMedium,
-                                    color = schoolTokens?.accent ?: MaterialTheme.colorScheme.primary
+                                    textDecoration = strikeDecoration,
+                                    color = if (isCancelled) {
+                                        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f)
+                                    } else {
+                                        schoolTokens?.accent ?: MaterialTheme.colorScheme.primary
+                                    }
                                 )
                             }
                         }
@@ -1606,7 +1750,12 @@ private fun LessonTimelineCard(
                                 Text(
                                     text = "gr. ${lesson.groupTag}",
                                     style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurface,
+                                    textDecoration = strikeDecoration,
+                                    color = if (isCancelled) {
+                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurface
+                                    },
                                     modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                                 )
                             }
@@ -1617,12 +1766,14 @@ private fun LessonTimelineCard(
 
             if (matchingSubstitution != null) {
                 Surface(
-                    color = if (matchingSubstitution.isCancellation) {
+                    color = if (isCancelled) {
                         MaterialTheme.colorScheme.errorContainer
                     } else {
                         MaterialTheme.colorScheme.tertiaryContainer
                     },
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("lesson_substitution_banner_${lesson.period}")
                 ) {
                     Row(
                         modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
@@ -1632,21 +1783,35 @@ private fun LessonTimelineCard(
                         Icon(
                             imageVector = Icons.Filled.SwapHoriz,
                             contentDescription = "Zastępstwo na tej lekcji",
-                            tint = if (matchingSubstitution.isCancellation) {
+                            tint = if (isCancelled) {
                                 MaterialTheme.colorScheme.onErrorContainer
                             } else {
                                 MaterialTheme.colorScheme.onTertiaryContainer
                             },
                             modifier = Modifier.size(18.dp)
                         )
+                        val detailText = when {
+                            matchingSubstitution.substituteTeacher.isNotBlank() &&
+                                matchingSubstitution.note.isNotBlank() &&
+                                !matchingSubstitution.substituteTeacher.equals(matchingSubstitution.note, ignoreCase = true) ->
+                                "${matchingSubstitution.substituteTeacher} (${matchingSubstitution.note})"
+                            matchingSubstitution.substituteTeacher.isNotBlank() ->
+                                matchingSubstitution.substituteTeacher
+                            matchingSubstitution.note.isNotBlank() ->
+                                matchingSubstitution.note
+                            else -> matchingSubstitution.subject
+                        }
+                        val absentInfo = matchingSubstitution.absentTeacher.trim()
+                        val showAbsentTeacher = absentInfo.isNotBlank() &&
+                            !detailText.contains(absentInfo, ignoreCase = true)
                         val alertText = buildString {
-                            append(if (matchingSubstitution.isCancellation) "ODWOŁANE: " else "ZASTĘPSTWO: ")
-                            if (matchingSubstitution.substituteTeacher.isNotBlank()) {
-                                append(matchingSubstitution.substituteTeacher)
-                            } else if (matchingSubstitution.note.isNotBlank()) {
-                                append(matchingSubstitution.note)
-                            } else {
-                                append(matchingSubstitution.subject)
+                            append(if (isCancelled) "ODWOŁANE" else "ZASTĘPSTWO")
+                            if (showAbsentTeacher) {
+                                append(" (za $absentInfo)")
+                            }
+                            if (detailText.isNotBlank()) {
+                                append(": ")
+                                append(detailText)
                             }
                             if (matchingSubstitution.room.isNotBlank()) {
                                 append(" • sala ${matchingSubstitution.room}")
@@ -1655,7 +1820,7 @@ private fun LessonTimelineCard(
                         Text(
                             text = alertText,
                             style = MaterialTheme.typography.labelLarge,
-                            color = if (matchingSubstitution.isCancellation) {
+                            color = if (isCancelled) {
                                 MaterialTheme.colorScheme.onErrorContainer
                             } else {
                                 MaterialTheme.colorScheme.onTertiaryContainer

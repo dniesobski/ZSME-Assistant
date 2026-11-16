@@ -43,7 +43,8 @@ object DeviceCalendarRepository {
                     CalendarContract.Calendars.ACCOUNT_TYPE,
                     CalendarContract.Calendars.CALENDAR_COLOR,
                     CalendarContract.Calendars.IS_PRIMARY,
-                    CalendarContract.Calendars.CALENDAR_ACCESS_LEVEL
+                    CalendarContract.Calendars.CALENDAR_ACCESS_LEVEL,
+                    CalendarContract.Calendars.DELETED
                 )
 
                 val selection = "${CalendarContract.Calendars.CALENDAR_ACCESS_LEVEL} >= ?"
@@ -64,8 +65,11 @@ object DeviceCalendarRepository {
                     val idxColor = cursor.getColumnIndex(CalendarContract.Calendars.CALENDAR_COLOR)
                     val idxPrimary = cursor.getColumnIndex(CalendarContract.Calendars.IS_PRIMARY)
                     val idxAccess = cursor.getColumnIndex(CalendarContract.Calendars.CALENDAR_ACCESS_LEVEL)
+                    val idxDeleted = cursor.getColumnIndex(CalendarContract.Calendars.DELETED)
 
                     while (cursor.moveToNext()) {
+                        val isDeleted = idxDeleted >= 0 && cursor.getInt(idxDeleted) == 1
+                        if (isDeleted) continue
                         val id = if (idxId >= 0) cursor.getLong(idxId).toString() else continue
                         val displayName = if (idxName >= 0) cursor.getString(idxName).orEmpty() else ""
                         val accountName = if (idxAccName >= 0) cursor.getString(idxAccName).orEmpty() else ""
@@ -95,6 +99,28 @@ object DeviceCalendarRepository {
                 )
             }
         }
+
+    fun resolveSelection(
+        calendars: List<TargetCalendarItem>,
+        preferredAccount: String?,
+        currentSelectedAccount: String?,
+        currentSelectedCalendarId: String?
+    ): Pair<String?, String?> {
+        if (calendars.isEmpty()) return null to null
+        val accounts = calendars.map { it.accountName }.distinct()
+        val matchedPreferred = preferredAccount?.trim()?.takeIf { it.isNotBlank() }?.let { pref ->
+            accounts.firstOrNull { it.equals(pref, ignoreCase = true) }
+        }
+        val chosenAccount = matchedPreferred
+            ?: currentSelectedAccount?.takeIf { it in accounts }
+            ?: accounts.firstOrNull()
+        val accountCalendars = calendars.filter { it.accountName == chosenAccount }
+        val chosenCalendarId = currentSelectedCalendarId
+            ?.takeIf { id -> accountCalendars.any { it.id == id } }
+            ?: accountCalendars.firstOrNull { it.isPrimary }?.id
+            ?: accountCalendars.firstOrNull()?.id
+        return chosenAccount to chosenCalendarId
+    }
 
     suspend fun createLocalDeviceCalendar(
         context: Context,
