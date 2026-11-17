@@ -439,9 +439,6 @@ fun ZsmeAppShell(
                             onRefreshCatalog = { viewModel.refreshClassList(silent = false) },
                             onOpenClassPicker = { viewModel.setClassPickerOpen(true) },
                             onOpenTeacherSetup = { viewModel.setTeacherProfileDialogOpen(true) },
-                            onGoogleCredentialSignedIn = viewModel::setGoogleCredentialSession,
-                            onGoogleCalendarAccessToken = viewModel::updateGoogleCalendarAccessToken,
-                            onGoogleCredentialSignOut = viewModel::signOutGoogleCredential,
                             onOpenPortalWebView = { targetUrl ->
                                 navController.navigate(
                                     ZsmeRoute.PortalWebView(

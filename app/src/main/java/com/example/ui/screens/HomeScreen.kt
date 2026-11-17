@@ -58,13 +58,19 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import coil.compose.SubcomposeAsyncImage
+import coil.request.ImageRequest
 import com.example.data.model.AppVersionHelper
 import com.example.data.model.LiveLessonItem
 import com.example.data.model.LiveLessonSlot
@@ -79,9 +85,6 @@ import com.example.ui.components.TeacherProfilePill
 import com.example.ui.components.ZsmeHeroOnboardingCard
 import com.example.ui.theme.SchoolColorPalette
 import kotlinx.coroutines.delay
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -130,13 +133,6 @@ fun HomeScreen(
         )
     }
 
-    val currentClockLabel = remember(nowMillis / 1000L) {
-        SimpleDateFormat("HH:mm:ss", Locale("pl", "PL")).format(Date(nowMillis))
-    }
-    val todayDateLabel = remember(nowMillis / 60_000L) {
-        SimpleDateFormat("d MMMM", Locale("pl", "PL")).format(Date(nowMillis))
-    }
-
     val updateState = uiState.appUpdateState
     val availableUpdate = updateState.checkResult?.takeIf { it.updateAvailable && it.candidate != null }
 
@@ -153,9 +149,6 @@ fun HomeScreen(
         ) {
             item(key = "home_header") {
                 HomeHeaderCard(
-                    dayName = evaluation.todayDayName,
-                    dateLabel = todayDateLabel,
-                    clockLabel = currentClockLabel,
                     isTeacherMode = isTeacherMode,
                     teacherAbbreviation = prefs.teacherAbbreviation,
                     teacherFullName = prefs.teacherFullName,
@@ -364,11 +357,10 @@ fun HomeScreen(
     }
 }
 
+private const val ZSME_LOGO_URL = "https://www.zsme.pl/img/zsme.png"
+
 @Composable
 private fun HomeHeaderCard(
-    dayName: String,
-    dateLabel: String,
-    clockLabel: String,
     isTeacherMode: Boolean,
     teacherAbbreviation: String,
     teacherFullName: String,
@@ -379,22 +371,48 @@ private fun HomeHeaderCard(
     onPickTeacher: () -> Unit,
     onRefresh: () -> Unit
 ) {
+    val context = LocalContext.current
+    val isDarkSurface = MaterialTheme.colorScheme.background.luminance() < 0.5f
+    val logoBackingColor = if (isDarkSurface) {
+        MaterialTheme.colorScheme.onBackground.copy(alpha = 0.92f)
+    } else {
+        MaterialTheme.colorScheme.surface
+    }
+
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = "Ekran główny",
-                style = MaterialTheme.typography.headlineSmall,
-                color = MaterialTheme.colorScheme.onBackground
-            )
-            Text(
-                text = "$dayName, $dateLabel • $clockLabel",
-                style = MaterialTheme.typography.bodyMedium.copy(fontFeatureSettings = "tnum"),
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+        Box(
+            modifier = Modifier.weight(1f),
+            contentAlignment = Alignment.CenterStart
+        ) {
+            Surface(
+                shape = RoundedCornerShape(12.dp),
+                color = logoBackingColor,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)),
+                modifier = Modifier.testTag("home_school_logo")
+            ) {
+                SubcomposeAsyncImage(
+                    model = ImageRequest.Builder(context)
+                        .data(ZSME_LOGO_URL)
+                        .crossfade(true)
+                        .build(),
+                    contentDescription = "Logo ZSME",
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier
+                        .padding(horizontal = 8.dp, vertical = 4.dp)
+                        .heightIn(min = 32.dp, max = 42.dp)
+                        .widthIn(max = 152.dp),
+                    loading = {
+                        HomeSchoolLogoFallback()
+                    },
+                    error = {
+                        HomeSchoolLogoFallback()
+                    }
+                )
+            }
         }
         Row(
             verticalAlignment = Alignment.CenterVertically,
@@ -426,6 +444,28 @@ private fun HomeHeaderCard(
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun HomeSchoolLogoFallback() {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
+    ) {
+        Icon(
+            imageVector = Icons.Filled.School,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.size(20.dp)
+        )
+        Text(
+            text = "ZSME",
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.primary
+        )
     }
 }
 

@@ -720,6 +720,16 @@ object ZsmeHtmlParser {
             parseRawTextLinesFallback(doc, dateHeading, items, announcements, notes)
         }
 
+        // 5. Always extract duty lines ("dyżury") published outside tables or inside Informacje/Uwagi
+        extractAdditionalDutyItems(
+            doc = doc,
+            defaultDate = dateHeading,
+            subTables = subTables,
+            outItems = items,
+            announcements = announcements,
+            notes = notes
+        )
+
         val cleanAnnouncements = announcements.distinct().take(20)
         val cleanNotes = notes.distinct().take(20)
 
@@ -763,8 +773,17 @@ object ZsmeHtmlParser {
         val maxCols = rows.maxOfOrNull { it.select("> th, > td").size } ?: 0
         val tableText = table.text().trim()
         val lower = tableText.lowercase()
-        if (maxCols <= 2 && (lower.startsWith("informacj") || lower.startsWith("uwag") || lower.startsWith("komunikat"))) {
+        val foldedLower = ScheduleFilterMatcher.foldPolishDiacritics(lower)
+        if (maxCols <= 1 && (lower.startsWith("informacj") || lower.startsWith("uwag") || lower.startsWith("komunikat"))) {
             return false
+        }
+        if (maxCols <= 2 && (lower.startsWith("informacj") || lower.startsWith("uwag") || lower.startsWith("komunikat")) &&
+            !foldedLower.contains("dyzur")
+        ) {
+            return false
+        }
+        if (rows.size >= 2 && maxCols >= 2 && foldedLower.contains("dyzur")) {
+            return true
         }
         val hasClassRows = rows.count { row ->
             val cells = row.select("> th, > td").map { it.text().trim() }
@@ -856,18 +875,37 @@ object ZsmeHtmlParser {
 
         val firstRow = grid.first()
         var startRow = 0
+        val tableCaptionOrPrev = buildString {
+            append(table.selectFirst("caption")?.text().orEmpty())
+            append(' ')
+            append(table.previousElementSibling()?.takeIf { it.tagName().lowercase() in setOf("h1", "h2", "h3", "h4", "h5", "p", "strong", "b", "div") && it.text().length <= 80 }?.text().orEmpty())
+        }
+        val isDutyTableContext = ScheduleFilterMatcher.isDutyText(tableCaptionOrPrev) ||
+            ScheduleFilterMatcher.isDutyText(firstRow.joinToString(" ") { it.text })
+
         if (firstRow.any { it.isHeaderTag } || looksLikeHeaderTexts(firstRow.map { it.text })) {
             startRow = 1
             firstRow.forEachIndexed { idx, cell ->
-                val h = cell.text.trim().lowercase()
+                val rawH = cell.text.trim().lowercase()
+                val h = ScheduleFilterMatcher.foldPolishDiacritics(rawH)
                 when {
                     h.contains("klas") || h.contains("oddz") || (h.contains("grup") && colClass == -1) -> colClass = idx
-                    h.contains("lekc") || h.contains("godz") || h == "nr" || h.contains("l.p") -> colPeriod = idx
-                    h.contains("nieobec") || (h.contains("nauczyciel") && colAbsent == -1) -> colAbsent = idx
-                    h.contains("przedm") || h.contains("zaję") || h.contains("zaje") -> colSubject = idx
-                    h.contains("zastęp") || h.contains("zastep") || h.contains("zmian") || h.contains("kto") || h.contains("nowy") -> colSub = idx
+                    h.contains("lekc") || h.contains("godz") || h == "nr" || h.contains("l.p") ||
+                        (h.contains("przerw") && colPeriod == -1) || (h.contains("po lekc") && colPeriod == -1) -> colPeriod = idx
+                    h.contains("zastepuj") || h.contains("dyzurujac") || h.contains("dyzurny") ||
+                        h.contains("pelniac") || h.contains("prowadz") || h.contains("zmian") ||
+                        h.contains("kto") || h.contains("nowy") ||
+                        ((h.contains("zastepstw") || h == "zastepstwo") && colSub == -1) -> colSub = idx
+                    h.contains("nieobec") || h.contains("za kogo") || h.contains("zastepowan") ||
+                        (h.contains("nauczyciel") && colAbsent == -1) -> colAbsent = idx
+                    h.contains("przedm") || h.contains("zajec") || h.contains("zaje") ||
+                        (h.contains("dyzur") && colSubject == -1) -> colSubject = idx
                     h.contains("sal") -> colRoom = idx
-                    h.contains("uwag") || h.contains("opis") || h.contains("koment") || h.contains("info") -> colNote = idx
+                    h.contains("uwag") || h.contains("opis") || h.contains("koment") || h.contains("info") ||
+                        h.contains("miejsc") || h.contains("sektor") || h.contains("pietr") ||
+                        h.contains("stanowisk") || h.contains("korytarz") -> {
+                        if (colNote == -1) colNote = idx else if (colSubject == -1) colSubject = idx
+                    }
                 }
             }
         }
@@ -914,9 +952,9 @@ object ZsmeHtmlParser {
             val period = values.getOrNull(colPeriod).orEmpty()
                 .ifBlank { values.firstOrNull { it.matches(Regex("""^\d{1,2}\.?(?:\s*[-–,;]\s*\d{1,2}\.?)*(?:\s*\(.*\))?$""")) }.orEmpty() }
 
-            val absent = values.getOrNull(colAbsent).orEmpty().ifBlank { currentSectionTeacher }
+            var absent = values.getOrNull(colAbsent).orEmpty().ifBlank { currentSectionTeacher }
             val subject = values.getOrNull(colSubject).orEmpty()
-            val substitute = values.getOrNull(colSub).orEmpty()
+            var substitute = values.getOrNull(colSub).orEmpty()
             val room = values.getOrNull(colRoom).orEmpty()
                 .ifBlank {
                     if (colRoom == -1) values.firstOrNull { isLikelyRoomCell(it) }.orEmpty() else ""
@@ -929,17 +967,40 @@ object ZsmeHtmlParser {
                     v.isNotBlank() && v != parsedClass && v != period && v != room
             }.joinToString(" • ")
 
-            val resolvedSubject = subject.ifBlank { remainingText }
-            val resolvedSubstitute = substitute.ifBlank {
+            var resolvedSubject = subject.ifBlank { remainingText }
+            var resolvedSubstitute = substitute.ifBlank {
                 if (colSub == -1 && subject.isNotBlank()) remainingText else ""
+            }
+
+            if (absent.isBlank() || resolvedSubstitute.isBlank()) {
+                val pairSource = listOf(resolvedSubstitute, absent, resolvedSubject, note, remainingText)
+                    .firstOrNull { it.contains(" za ", ignoreCase = true) || it.contains("->") || it.contains("→") }
+                if (!pairSource.isNullOrBlank()) {
+                    val (parsedAbsent, parsedSub) = extractTeacherPairFromText(pairSource)
+                    if (parsedAbsent.isNotBlank() && (absent.isBlank() || pairSource == absent)) {
+                        absent = parsedAbsent
+                    }
+                    if (parsedSub.isNotBlank() && (resolvedSubstitute.isBlank() || pairSource == resolvedSubstitute)) {
+                        resolvedSubstitute = parsedSub
+                    }
+                }
+            }
+
+            if (isDutyTableContext && !ScheduleFilterMatcher.isDutyText("$resolvedSubject $note $resolvedSubstitute")) {
+                resolvedSubject = if (resolvedSubject.isBlank()) "Dyżur" else "Dyżur • $resolvedSubject"
             }
 
             val combined = "$parsedClass $period $absent $resolvedSubject $resolvedSubstitute $room $note"
             if (combined.isBlank()) continue
 
-            val isCancelled = isCancellationText(combined)
+            val isDuty = isDutyTableContext || ScheduleFilterMatcher.isDutyText(combined)
+            val isCancelled = if (isDuty && !combined.contains("odwołan", ignoreCase = true) && !combined.contains("odwolan", ignoreCase = true)) {
+                false
+            } else {
+                isCancellationText(combined)
+            }
             val groupTag = ScheduleFilterMatcher.detectGroupTag(combined)
-            val id = sha256("$currentSectionDate|$parsedClass|$period|$resolvedSubject|$resolvedSubstitute|$room|$rIdx")
+            val id = sha256("$currentSectionDate|$parsedClass|$period|$absent|$resolvedSubject|$resolvedSubstitute|$room|$rIdx")
 
             outItems.add(
                 SubstitutionItem(
@@ -1023,7 +1084,7 @@ object ZsmeHtmlParser {
             val rawText = cellTextWithBreaks(el)
             if (rawText.isBlank()) return
 
-            // Do not treat div/card substitution rows as Informacje/Uwagi boxes
+            // Do not treat div/card substitution or duty rows as Informacje/Uwagi boxes
             val hasSubstitutionClassCue = classTokenRegex.containsMatchIn(rawText) && (
                 rawText.contains("lekcj", ignoreCase = true) ||
                     rawText.contains("lek.", ignoreCase = true) ||
@@ -1032,7 +1093,8 @@ object ZsmeHtmlParser {
                     rawText.contains("zastęp", ignoreCase = true) ||
                     rawText.contains("zastep", ignoreCase = true)
                 )
-            if (hasSubstitutionClassCue && detectHint(el, rawText) == null) {
+            val hasStandaloneDutyCue = looksLikeDutyAssignmentLine(rawText) && !rawText.contains("\n")
+            if ((hasSubstitutionClassCue || hasStandaloneDutyCue) && detectHint(el, rawText) == null) {
                 seenSubstitutions = true
                 return
             }
@@ -1117,8 +1179,14 @@ object ZsmeHtmlParser {
     }
 
     private fun looksLikeHeaderTexts(texts: List<String>): Boolean {
-        val joined = texts.joinToString(" ") { it.trim().lowercase() }
-        val keywords = listOf("klasa", "oddział", "oddzial", "lekcja", "nauczyciel", "zastępstwo", "zastepstwo", "zastępujący", "zastepujacy", "przedmiot", "sala", "uwagi", "godz")
+        val joined = ScheduleFilterMatcher.foldPolishDiacritics(
+            texts.joinToString(" ") { it.trim().lowercase() }
+        )
+        val keywords = listOf(
+            "klasa", "oddzial", "lekcja", "nauczyciel", "zastepstwo",
+            "zastepujacy", "przedmiot", "sala", "uwagi", "godz",
+            "dyzur", "przerwa", "miejsce", "pelniacy", "zastepuje", "osoba", "za kogo"
+        )
         return keywords.count { joined.contains(it) } >= 2
     }
 
@@ -1134,7 +1202,7 @@ object ZsmeHtmlParser {
             RegexOption.IGNORE_CASE
         )
 
-        val candidateBlocks = doc.select("div.zastepstwo, div.substitution, div.card, div.item, div.row, div.entry, li, p, article")
+        val candidateBlocks = doc.select("div.zastepstwo, div.substitution, div.dyzur, div.duty, div.card, div.item, div.row, div.entry, li, p, article")
         for ((idx, block) in candidateBlocks.withIndex()) {
             val childBlocks = block.select("> div, > p, > ul, > table")
             if (block.tagName().equals("div", ignoreCase = true) && childBlocks.size > 2) continue
@@ -1162,6 +1230,10 @@ object ZsmeHtmlParser {
                             isCancellation = isCancelled
                         )
                     )
+                } else if (looksLikeDutyAssignmentLine(line)) {
+                    parseDutyLineToItem(line, defaultDate, "div|$idx|$lineIdx")?.let { dutyItem ->
+                        outItems.add(dutyItem)
+                    }
                 } else if (line.lowercase().startsWith("uwag")) {
                     cleanSectionLines(line, isNote = true).forEach { cleaned ->
                         if (!outNotes.contains(cleaned)) outNotes.add(cleaned)
@@ -1206,6 +1278,10 @@ object ZsmeHtmlParser {
                         isCancellation = isCancellationText(line)
                     )
                 )
+            } else if (looksLikeDutyAssignmentLine(line)) {
+                parseDutyLineToItem(line, defaultDate, "raw|$idx")?.let { dutyItem ->
+                    outItems.add(dutyItem)
+                }
             } else if (line.lowercase().startsWith("uwag")) {
                 cleanSectionLines(line, isNote = true).forEach { cleaned ->
                     if (!outNotes.contains(cleaned)) outNotes.add(cleaned)
@@ -1214,6 +1290,173 @@ object ZsmeHtmlParser {
                 outAnnouncements.add(line)
             }
         }
+    }
+
+    private fun extractAdditionalDutyItems(
+        doc: Document,
+        defaultDate: String,
+        subTables: Set<Element>,
+        outItems: MutableList<SubstitutionItem>,
+        announcements: List<String>,
+        notes: List<String>
+    ) {
+        val candidateLines = linkedSetOf<String>()
+        candidateLines.addAll(announcements)
+        candidateLines.addAll(notes)
+
+        val blocks = doc.select("div, p, li, article, td, dd")
+        for (block in blocks) {
+            if (block.parents().any { it in subTables }) continue
+            if (block.select("table").any { it in subTables }) continue
+            val childBlocks = block.select("> div, > p, > ul, > table")
+            if (childBlocks.size > 1) continue
+            cellTextWithBreaks(block)
+                .split("\n")
+                .map { it.trim() }
+                .filter { it.length >= 8 }
+                .forEach { candidateLines.add(it) }
+        }
+
+        val existingSignatures = outItems.map { item ->
+            ScheduleFilterMatcher.foldPolishDiacritics(
+                "${item.period} ${item.absentTeacher} ${item.subject} ${item.substituteTeacher} ${item.note}"
+            ).lowercase().replace(Regex("""\s+"""), " ").trim()
+        }.toMutableSet()
+
+        candidateLines.forEachIndexed { idx, line ->
+            if (!looksLikeDutyAssignmentLine(line)) return@forEachIndexed
+            val parsed = parseDutyLineToItem(line, defaultDate, "duty_extra|$idx") ?: return@forEachIndexed
+            val normLine = ScheduleFilterMatcher.foldPolishDiacritics(line).lowercase().replace(Regex("""\s+"""), " ").trim()
+            val alreadyCovered = existingSignatures.any { sig ->
+                (sig.isNotBlank() && (sig.contains(normLine) || normLine.contains(sig))) ||
+                    (parsed.absentTeacher.isNotBlank() && parsed.substituteTeacher.isNotBlank() &&
+                        sig.contains(ScheduleFilterMatcher.foldPolishDiacritics(parsed.absentTeacher).lowercase()) &&
+                        sig.contains(ScheduleFilterMatcher.foldPolishDiacritics(parsed.substituteTeacher).lowercase()) &&
+                        ScheduleFilterMatcher.isDutyText(sig))
+            }
+            if (!alreadyCovered) {
+                outItems.add(parsed)
+                existingSignatures.add(normLine)
+            }
+        }
+    }
+
+    private fun looksLikeDutyAssignmentLine(line: String): Boolean {
+        val trimmed = line.trim()
+        if (trimmed.length !in 8..320) return false
+        if (!ScheduleFilterMatcher.isDutyText(trimmed)) return false
+        val folded = ScheduleFilterMatcher.foldPolishDiacritics(trimmed).lowercase()
+        if (folded.contains("bez zmian") || folded.contains("brak dyzur") || folded.contains("nie ma dyzur")) {
+            return false
+        }
+        val hasSeparatorOrPreposition = trimmed.contains(':') ||
+            trimmed.contains("->") ||
+            trimmed.contains('→') ||
+            trimmed.contains(" - ") ||
+            trimmed.contains(" – ") ||
+            Regex("""\bza\b""", RegexOption.IGNORE_CASE).containsMatchIn(folded) ||
+            folded.contains("pelni") ||
+            folded.contains("zastep")
+        val hasPersonLikeToken = Regex("""\b[A-ZĄĆĘŁŃÓŚŹŻ]{2,4}\b""").containsMatchIn(trimmed) ||
+            Regex("""\b[A-ZĄĆĘŁŃÓŚŹŻ]\.\s*[A-ZĄĆĘŁŃÓŚŹŻ][a-ząćęłńóśźż]{2,}\b""").containsMatchIn(trimmed) ||
+            Regex("""\b[A-ZĄĆĘŁŃÓŚŹŻ][a-ząćęłńóśźż]{2,}\s+[A-ZĄĆĘŁŃÓŚŹŻ][a-ząćęłńóśźż]{2,}\b""").containsMatchIn(trimmed)
+        val hasTimeOrPeriodCue = Regex("""\b(?:po|przed)\s+\d{1,2}\b|\b\d{1,2}[:.]\d{2}\b|\bprzerw\w*\b""").containsMatchIn(folded)
+        return hasSeparatorOrPreposition && (hasPersonLikeToken || hasTimeOrPeriodCue)
+    }
+
+    private fun parseDutyLineToItem(
+        line: String,
+        defaultDate: String,
+        idSeed: String
+    ): SubstitutionItem? {
+        val clean = line.trim()
+        if (clean.isBlank()) return null
+
+        val periodMatch = Regex(
+            """((?:po|przed)\s+\d{1,2}\s*\.?\s*(?:lekcj[aei]?|lek\.?|godz\.?)?|\bprzerwa\s+(?:po|przed)\s+\d{1,2}\b|\b\d{1,2}[:.]\d{2}\s*[-–]\s*\d{1,2}[:.]\d{2}\b)""",
+            RegexOption.IGNORE_CASE
+        ).find(clean)
+        val period = periodMatch?.groupValues?.get(1)?.trim().orEmpty()
+
+        val (absent, substitute) = extractTeacherPairFromText(clean)
+        val isCancelled = clean.contains("odwołan", ignoreCase = true) || clean.contains("odwolan", ignoreCase = true)
+        return SubstitutionItem(
+            id = sha256("$idSeed|$defaultDate|$clean"),
+            dateLabel = defaultDate,
+            className = "",
+            period = period,
+            absentTeacher = absent,
+            subject = clean,
+            substituteTeacher = substitute,
+            note = if (absent.isBlank() && substitute.isBlank()) clean else "",
+            isCancellation = isCancelled
+        )
+    }
+
+    private fun extractTeacherPairFromText(rawText: String): Pair<String, String> {
+        val clean = rawText
+            .replace(Regex("""^(?:dyżury?|dyzury?)\s*[:\-–]\s*""", RegexOption.IGNORE_CASE), "")
+            .trim()
+        if (clean.isBlank()) return "" to ""
+
+        // Pattern 1: "... A -> B" or "... A → B"
+        val arrowParts = clean.split(Regex("""\s*(?:->|→)\s*"""), limit = 2)
+        if (arrowParts.size == 2) {
+            val left = stripDutyContextPrefix(arrowParts[0])
+            val right = arrowParts[1].trim().trim('(', ')', '.', ',')
+            if (left.isNotBlank() || right.isNotBlank()) return left to right
+        }
+
+        // Pattern 2: "za <Absent>: <Substitute>" / "za <Absent> - <Substitute>" / "za <Absent> pełni <Substitute>"
+        val zaThenSub = Regex(
+            """\bza\s+([^:;\n()–-]+?)\s*(?::|–|-|\s+pełni\s+|\s+pelni\s+|\s+zastępuje\s+|\s+zastepuje\s+)\s*(.+)$""",
+            RegexOption.IGNORE_CASE
+        ).find(clean)
+        if (zaThenSub != null) {
+            val absent = zaThenSub.groupValues[1].trim().trim('(', ')', '.', ',')
+            val sub = zaThenSub.groupValues[2].trim().trim('(', ')', '.', ',')
+            if (absent.isNotBlank() || sub.isNotBlank()) return absent to sub
+        }
+
+        // Pattern 3: "<Substitute> za <Absent>" or "<Substitute> (za <Absent>)"
+        val subThenZa = Regex(
+            """^(.+?)\s*\(?\bza\s+([^()]+?)\)?(?:\s*[-–,;].*)?$""",
+            RegexOption.IGNORE_CASE
+        ).find(clean)
+        if (subThenZa != null) {
+            val leftRaw = subThenZa.groupValues[1].trim()
+            val leftCandidate = if (leftRaw.contains(':')) {
+                leftRaw.substringAfterLast(':').trim()
+            } else {
+                stripDutyContextPrefix(leftRaw)
+            }.trim('(', ')', '-', '–', ',', ' ')
+            val absent = subThenZa.groupValues[2].trim().trim('(', ')', '.', ',')
+            val isLeftOnlyContext = leftCandidate.isBlank() ||
+                ScheduleFilterMatcher.foldPolishDiacritics(leftCandidate).lowercase()
+                    .matches(Regex("""^(?:dyzur.*|przerwa.*|po\s+\d+.*|przed\s+\d+.*)$"""))
+            return absent to (if (isLeftOnlyContext) "" else leftCandidate)
+        }
+
+        // Pattern 4: "Dyżur ... : <Substitute>" (no absent teacher specified)
+        if (clean.contains(':')) {
+            val afterColon = clean.substringAfterLast(':').trim().trim('(', ')', '.', ',')
+            if (afterColon.length in 2..60 && !ScheduleFilterMatcher.isDutyText(afterColon)) {
+                return "" to afterColon
+            }
+        }
+        return "" to ""
+    }
+
+    private fun stripDutyContextPrefix(raw: String): String {
+        var s = raw.trim()
+        if (s.contains(':')) {
+            s = s.substringAfterLast(':').trim()
+        }
+        s = s.replace(
+            Regex("""^(?:dyżur|dyzur)\w*(?:\s+(?:na|w|po|przed)\s+[^–-]+?)?(?:\s*[-–]\s*|\s+)""", RegexOption.IGNORE_CASE),
+            ""
+        ).trim()
+        return s
     }
 
     private fun isCancellationText(text: String): Boolean =

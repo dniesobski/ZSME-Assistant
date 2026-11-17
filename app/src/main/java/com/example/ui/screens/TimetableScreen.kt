@@ -82,7 +82,6 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.example.data.model.GoogleCredentialSession
 import com.example.data.model.LessonEntry
 import com.example.data.model.ScheduleFilterMatcher
 import com.example.data.model.StudentGroup
@@ -116,9 +115,6 @@ fun TimetableScreen(
     onRefreshCatalog: () -> Unit,
     onOpenClassPicker: () -> Unit,
     onOpenTeacherSetup: () -> Unit,
-    onGoogleCredentialSignedIn: (GoogleCredentialSession?) -> Unit = {},
-    onGoogleCalendarAccessToken: (String) -> Unit = {},
-    onGoogleCredentialSignOut: () -> Unit = {},
     onOpenPortalWebView: (String?) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -715,10 +711,6 @@ fun TimetableScreen(
             filteredDayLessons = filteredWeekLessons,
             isTeacherMode = isTeacherMode,
             teacherSchools = teacherSchools,
-            credentialSession = uiState.googleCredentialSession,
-            onCredentialSignedIn = onGoogleCredentialSignedIn,
-            onAccessTokenGranted = onGoogleCalendarAccessToken,
-            onCredentialSignOut = onGoogleCredentialSignOut,
             onExportCompleted = { _ -> },
             onDismiss = { isExportCalendarDialogOpen = false }
         )

@@ -6,12 +6,10 @@ import androidx.lifecycle.viewModelScope
 import com.example.BuildConfig
 import com.example.ZsmeApplication
 import com.example.data.ZsmeRepository
-import com.example.data.calendar.GoogleCredentialAuthManager
 import com.example.data.model.ApkCandidate
 import com.example.data.model.AppUpdateCheckResult
 import com.example.data.model.AppVersionHelper
 import com.example.data.model.ClassTimetable
-import com.example.data.model.GoogleCredentialSession
 import com.example.data.model.ScheduleFilterMatcher
 import com.example.data.model.SchoolClass
 import com.example.data.model.StudentGroup
@@ -94,9 +92,7 @@ data class ZsmeUiState(
     val activeMeshChannel: String = "#ogólny",
     val myMeshNodeId: String = "",
     // App update state
-    val appUpdateState: AppUpdateUiState = AppUpdateUiState(),
-    // Google Credential Manager session
-    val googleCredentialSession: GoogleCredentialSession? = null
+    val appUpdateState: AppUpdateUiState = AppUpdateUiState()
 ) {
     val activeDisplayedTimetable: ClassTimetable?
         get() = if (preferences.userRole == UserRole.TEACHER || selectedTimetableCategory == TimetableCategory.CLASS) {
@@ -165,8 +161,7 @@ private data class TransientUiFlags(
     val selectedTeacherOrRoom: TimetableTarget? = null,
     val targetTimetable: ClassTimetable? = null,
     val activeMeshChannel: String = "#ogólny",
-    val selectedMeshRecipientNick: String = "",
-    val googleCredentialSession: GoogleCredentialSession? = null
+    val selectedMeshRecipientNick: String = ""
 )
 
 private data class MeshLiveSnapshot(
@@ -279,8 +274,7 @@ class ZsmeViewModel(application: Application) : AndroidViewModel(application) {
             meshMessages = mesh.messages,
             activeMeshChannel = flags.activeMeshChannel,
             myMeshNodeId = meshManager.myNodeId,
-            appUpdateState = updateState,
-            googleCredentialSession = flags.googleCredentialSession
+            appUpdateState = updateState
         )
     }.stateIn(
         scope = viewModelScope,
@@ -1175,24 +1169,6 @@ class ZsmeViewModel(application: Application) : AndroidViewModel(application) {
         transientFlags.update { it.copy(isClassPickerOpen = open) }
         if (open && uiState.value.availableClasses.isEmpty()) {
             refreshClassList()
-        }
-    }
-
-    fun setGoogleCredentialSession(session: GoogleCredentialSession?) {
-        transientFlags.update { it.copy(googleCredentialSession = session) }
-    }
-
-    fun updateGoogleCalendarAccessToken(accessToken: String) {
-        transientFlags.update { flags ->
-            val current = flags.googleCredentialSession ?: return@update flags
-            flags.copy(googleCredentialSession = current.copy(calendarAccessToken = accessToken))
-        }
-    }
-
-    fun signOutGoogleCredential() {
-        viewModelScope.launch {
-            GoogleCredentialAuthManager.signOut(app)
-            transientFlags.update { it.copy(googleCredentialSession = null) }
         }
     }
 

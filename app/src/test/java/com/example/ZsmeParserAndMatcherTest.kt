@@ -1115,4 +1115,93 @@ class ZsmeParserAndMatcherTest {
         assertEquals("1.0.6", htmlCandidates.first().versionName)
         assertEquals(legacyV106Url, htmlCandidates.first().downloadUrl)
     }
+
+    @Test
+    fun `parseSubstitutions and teacher matcher detect teacher duties from dedicated tables, main tables, and info blocks`() {
+        val html = """
+            <html><body>
+              <h2>Zastępstwa na wtorek 17.11.2026</h2>
+              <div class="informacje">
+                <strong>Informacje:</strong><br>
+                Dyżur po 2 lekcji (I piętro): Jan Kowalski za Annę Nowak<br>
+                Dyżur ranny 7:45-8:00 za Kowalskiego: Marek Lis
+              </div>
+              <table>
+                <tr><th>Klasa</th><th>Lekcja</th><th>Nauczyciel</th><th>Przedmiot</th><th>Nauczyciel zastępujący</th><th>Sala</th></tr>
+                <tr><td>2TI</td><td>1</td><td>A. Nowak</td><td>Matematyka</td><td>M. Lis</td><td>204</td></tr>
+                <tr><td>-</td><td>po 3</td><td>K. Zieliński</td><td>Dyżur na parterze</td><td>JK</td><td>-</td></tr>
+              </table>
+              <h3>Dyżury</h3>
+              <table>
+                <tr><th>Przerwa</th><th>Miejsce</th><th>Nauczyciel</th></tr>
+                <tr><td>po 4 lekcji</td><td>II piętro</td><td>P. Mazur (za J. Kowalskiego)</td></tr>
+              </table>
+            </body></html>
+        """.trimIndent()
+
+        val snapshot = ZsmeHtmlParser.parseSubstitutions(html, "https://sekretariat.zsme.pl/tv.php")
+        val jkItems = snapshot.items.filter {
+            ScheduleFilterMatcher.matchesTeacherSubstitution(it, "JK", "Jan Kowalski")
+        }
+
+        // Expect JK to match:
+        // 1) "Dyżur po 2 lekcji (I piętro): Jan Kowalski za Annę Nowak" -> CONDUCTING
+        // 2) "Dyżur ranny 7:45-8:00 za Kowalskiego: Marek Lis" -> REPLACED (inflected surname)
+        // 3) Main table row "Dyżur na parterze" with Nauczyciel zastępujący = JK -> CONDUCTING
+        // 4) Dedicated Dyżury table row "P. Mazur (za J. Kowalskiego)" -> REPLACED
+        assertEquals(4, jkItems.size)
+        assertEquals(
+            2,
+            jkItems.count {
+                ScheduleFilterMatcher.classifyTeacherSubstitution(it, "JK", "Jan Kowalski") ==
+                    ScheduleFilterMatcher.TeacherSubstitutionMatch.CONDUCTING
+            }
+        )
+        assertEquals(
+            2,
+            jkItems.count {
+                ScheduleFilterMatcher.classifyTeacherSubstitution(it, "JK", "Jan Kowalski") ==
+                    ScheduleFilterMatcher.TeacherSubstitutionMatch.REPLACED
+            }
+        )
+        assertTrue(jkItems.all { ScheduleFilterMatcher.isDutyItem(it) })
+        assertTrue(jkItems.none { it.isCancellation })
+
+        // Ensure break duty "po 3" does not overwrite lesson 3 in teacher's lesson timetable
+        val matchedLesson = ScheduleFilterMatcher.findTeacherSubstitutionForLesson(
+            substitutions = jkItems,
+            dateHeading = snapshot.dateHeading,
+            lessonPeriod = 3,
+            dayIndex = 1,
+            todayWeekdayIndex = 1
+        )
+        assertEquals(null, matchedLesson)
+    }
+
+    @Test
+    fun `parseSubstitutions parses two-column duty table without class column`() {
+        val html = """
+            <html><body>
+              <h2>Zastępstwa 17.11.2026</h2>
+              <table>
+                <caption>Dyżury nauczycieli</caption>
+                <tr><th>Przerwa</th><th>Zastępujący</th></tr>
+                <tr><td>po 1 lekcji</td><td>Jan Kowalski za M. Nowak</td></tr>
+              </table>
+            </body></html>
+        """.trimIndent()
+
+        val snapshot = ZsmeHtmlParser.parseSubstitutions(html, "https://sekretariat.zsme.pl/tv.php")
+        assertEquals(1, snapshot.items.size)
+        val duty = snapshot.items[0]
+        assertTrue(ScheduleFilterMatcher.isDutyItem(duty))
+        assertEquals(
+            ScheduleFilterMatcher.TeacherSubstitutionMatch.CONDUCTING,
+            ScheduleFilterMatcher.classifyTeacherSubstitution(duty, "JK", "Jan Kowalski")
+        )
+        assertEquals(
+            ScheduleFilterMatcher.TeacherSubstitutionMatch.REPLACED,
+            ScheduleFilterMatcher.classifyTeacherSubstitution(duty, "MN", "Nowak")
+        )
+    }
 }

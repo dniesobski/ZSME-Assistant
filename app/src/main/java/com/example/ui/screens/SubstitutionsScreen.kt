@@ -484,6 +484,7 @@ private fun SubstitutionCard(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
+                        val isDuty = ScheduleFilterMatcher.isDutyItem(item)
                         if (item.className.isNotBlank()) {
                             Surface(
                                 shape = RoundedCornerShape(8.dp),
@@ -496,14 +497,37 @@ private fun SubstitutionCard(
                                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                                 )
                             }
+                        } else if (isDuty) {
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = MaterialTheme.colorScheme.secondaryContainer
+                            ) {
+                                Text(
+                                    text = "Dyżur",
+                                    style = MaterialTheme.typography.labelLarge,
+                                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                )
+                            }
                         }
                         if (item.period.isNotBlank()) {
+                            val periodLabel = if (
+                                item.period.any { it.isDigit() } &&
+                                !item.period.contains("lekcj", ignoreCase = true) &&
+                                !item.period.contains("przerw", ignoreCase = true) &&
+                                !item.period.startsWith("po ", ignoreCase = true) &&
+                                !item.period.startsWith("przed ", ignoreCase = true)
+                            ) {
+                                "Lekcja ${item.period}"
+                            } else {
+                                item.period
+                            }
                             Surface(
                                 shape = RoundedCornerShape(8.dp),
                                 color = MaterialTheme.colorScheme.surfaceVariant
                             ) {
                                 Text(
-                                    text = "Lekcja ${item.period}",
+                                    text = periodLabel,
                                     style = MaterialTheme.typography.labelMedium,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
@@ -525,12 +549,16 @@ private fun SubstitutionCard(
                         }
                     }
 
+                    val isDutyBadge = ScheduleFilterMatcher.isDutyItem(item)
                     Surface(
                         shape = RoundedCornerShape(8.dp),
                         color = badgeContainer
                     ) {
                         val badgeLabel = when {
                             item.isCancellation -> "ODWOŁANE"
+                            isDutyBadge && teacherMatch == ScheduleFilterMatcher.TeacherSubstitutionMatch.CONDUCTING -> "DYŻUR • PROWADZISZ"
+                            isDutyBadge && teacherMatch == ScheduleFilterMatcher.TeacherSubstitutionMatch.REPLACED -> "DYŻUR • ZA CIEBIE"
+                            isDutyBadge -> "DYŻUR"
                             teacherMatch == ScheduleFilterMatcher.TeacherSubstitutionMatch.CONDUCTING -> "PROWADZISZ"
                             teacherMatch == ScheduleFilterMatcher.TeacherSubstitutionMatch.REPLACED -> "ZA CIEBIE"
                             else -> "ZASTĘPSTWO"

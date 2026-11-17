@@ -395,6 +395,19 @@ object ScheduleFilterMatcher {
         return false
     }
 
+    fun isDutyText(text: String): Boolean {
+        if (text.isBlank()) return false
+        val folded = foldPolishDiacritics(text).lowercase()
+        return Regex("""\bdyzur\w*\b""").containsMatchIn(folded)
+    }
+
+    fun isDutyItem(item: SubstitutionItem): Boolean =
+        isDutyText(item.subject) ||
+            isDutyText(item.note) ||
+            isDutyText(item.className) ||
+            isDutyText(item.period) ||
+            isDutyText(item.substituteTeacher)
+
     fun classifyTeacherSubstitution(
         item: SubstitutionItem,
         teacherAbbr: String,
@@ -425,21 +438,53 @@ object ScheduleFilterMatcher {
             return false
         }
 
-        val inSubstitute = fieldMatches(item.substituteTeacher)
+        val subTextForConducting = item.substituteTeacher.replace(
+            Regex("""\(?\bza\s+[^:;\n()–-]+(?:\s+[^:;\n()–-]+){0,3}\)?""", RegexOption.IGNORE_CASE),
+            " "
+        ).trim()
+        val inSubstitute = fieldMatches(subTextForConducting)
         val inAbsent = fieldMatches(item.absentTeacher)
-        return when {
-            inSubstitute -> TeacherSubstitutionMatch.CONDUCTING
-            inAbsent -> TeacherSubstitutionMatch.REPLACED
-            fieldMatches(item.note) -> {
-                val lowerNote = item.note.lowercase()
-                if (lowerNote.contains("zastęp") || lowerNote.contains("zastep") || lowerNote.contains("prowadzi")) {
-                    TeacherSubstitutionMatch.CONDUCTING
-                } else {
-                    TeacherSubstitutionMatch.REPLACED
-                }
+        if (inSubstitute) return TeacherSubstitutionMatch.CONDUCTING
+        if (inAbsent) return TeacherSubstitutionMatch.REPLACED
+
+        val fallbackFields = listOf(item.note, item.subject, item.className).filter { it.isNotBlank() }
+        for (rawField in fallbackFields) {
+            if (!fieldMatches(rawField)) continue
+            val arrowParts = rawField.split(Regex("""\s*(?:->|→)\s*"""), limit = 2)
+            if (arrowParts.size == 2) {
+                if (fieldMatches(arrowParts[1])) return TeacherSubstitutionMatch.CONDUCTING
+                if (fieldMatches(arrowParts[0])) return TeacherSubstitutionMatch.REPLACED
             }
-            else -> TeacherSubstitutionMatch.NONE
+
+            val zaRegex = Regex(
+                """\bza\s+([^:;\n()–-]+(?:\s+[^:;\n()–-]+){0,3})""",
+                RegexOption.IGNORE_CASE
+            )
+            val zaMatches = zaRegex.findAll(rawField).toList()
+            if (zaMatches.isNotEmpty()) {
+                val matchedInsideZa = zaMatches.any { fieldMatches(it.groupValues[1]) }
+                var outsideZa = rawField
+                for (m in zaMatches.reversed()) {
+                    outsideZa = outsideZa.removeRange(m.range)
+                }
+                val matchedOutsideZa = fieldMatches(outsideZa)
+                if (matchedOutsideZa) return TeacherSubstitutionMatch.CONDUCTING
+                if (matchedInsideZa) return TeacherSubstitutionMatch.REPLACED
+            }
+
+            val foldedField = foldPolishDiacritics(rawField).lowercase()
+            return if (
+                foldedField.contains("zastep") ||
+                foldedField.contains("prowadz") ||
+                foldedField.contains("pelni") ||
+                foldedField.contains("dyzur")
+            ) {
+                TeacherSubstitutionMatch.CONDUCTING
+            } else {
+                TeacherSubstitutionMatch.REPLACED
+            }
         }
+        return TeacherSubstitutionMatch.NONE
     }
 
     fun matchesTeacherSubstitution(
@@ -455,8 +500,21 @@ object ScheduleFilterMatcher {
         if (foldedQuery.length >= 3 && foldedField.contains(foldedQuery)) return true
         return foldedParts.any { part ->
             val lp = part.lowercase()
-            val regex = Regex("""(?<![a-z0-9])${Regex.escape(lp)}(?![a-z0-9])""")
-            regex.containsMatchIn(foldedField)
+            val exactRegex = Regex("""(?<![a-z0-9])${Regex.escape(lp)}(?![a-z0-9])""")
+            if (exactRegex.containsMatchIn(foldedField)) return@any true
+            if (lp.length >= 4) {
+                val stem = when {
+                    lp.endsWith("ski") || lp.endsWith("ska") || lp.endsWith("cki") || lp.endsWith("cka") ->
+                        lp.dropLast(1) + "(?:i|a|iego|iemu|im|iej|ich|imi)?"
+                    lp.lastOrNull() in setOf('a', 'e', 'o', 'y', 'i') ->
+                        lp.dropLast(1) + "(?:a|e|i|o|u|y|ej|ego|emu|ym|im)?"
+                    else ->
+                        lp + "(?:a|owi|iem|em|u|e|y|i|ek|ka)?"
+                }
+                val inflectedRegex = Regex("""(?<![a-z0-9])$stem(?![a-z0-9])""")
+                if (inflectedRegex.containsMatchIn(foldedField)) return@any true
+            }
+            false
         }
     }
 
@@ -810,12 +868,14 @@ object ScheduleFilterMatcher {
         todayWeekdayIndex: Int?
     ): SubstitutionItem? {
         return substitutions.firstOrNull { sub ->
-            substitutionAppliesToDay(
-                dateLabel = sub.dateLabel,
-                fallbackDateHeading = dateHeading,
-                dayIndex = dayIndex,
-                todayWeekdayIndex = todayWeekdayIndex
-            ) && lessonPeriod in parseSubstitutionPeriods(sub.period)
+            !isDutyItem(sub) &&
+                substitutionAppliesToDay(
+                    dateLabel = sub.dateLabel,
+                    fallbackDateHeading = dateHeading,
+                    dayIndex = dayIndex,
+                    todayWeekdayIndex = todayWeekdayIndex
+                ) &&
+                lessonPeriod in parseSubstitutionPeriods(sub.period)
         }
     }
 
