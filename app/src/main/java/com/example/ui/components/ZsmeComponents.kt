@@ -482,16 +482,16 @@ fun ClassAndGroupPill(
     modifier: Modifier = Modifier
 ) {
     Surface(
-        shape = RoundedCornerShape(999.dp),
+        shape = RoundedCornerShape(20.dp),
         color = MaterialTheme.colorScheme.primaryContainer,
         modifier = modifier
-            .clip(RoundedCornerShape(999.dp))
+            .clip(RoundedCornerShape(20.dp))
             .clickable(onClick = onClick)
             .minimumInteractiveComponentSize()
             .testTag("class_badge_button")
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
@@ -506,7 +506,7 @@ fun ClassAndGroupPill(
                 style = MaterialTheme.typography.labelLarge,
                 fontWeight = FontWeight.SemiBold,
                 color = MaterialTheme.colorScheme.onPrimaryContainer,
-                maxLines = 1,
+                maxLines = 3,
                 overflow = TextOverflow.Ellipsis
             )
         }
@@ -591,16 +591,16 @@ fun TeacherProfilePill(
     modifier: Modifier = Modifier
 ) {
     Surface(
-        shape = RoundedCornerShape(999.dp),
+        shape = RoundedCornerShape(20.dp),
         color = MaterialTheme.colorScheme.secondaryContainer,
         modifier = modifier
-            .clip(RoundedCornerShape(999.dp))
+            .clip(RoundedCornerShape(20.dp))
             .clickable(onClick = onClick)
             .minimumInteractiveComponentSize()
             .testTag("teacher_badge_button")
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
@@ -621,7 +621,7 @@ fun TeacherProfilePill(
                 style = MaterialTheme.typography.labelLarge,
                 fontWeight = FontWeight.SemiBold,
                 color = MaterialTheme.colorScheme.onSecondaryContainer,
-                maxLines = 1,
+                maxLines = 3,
                 overflow = TextOverflow.Ellipsis
             )
         }

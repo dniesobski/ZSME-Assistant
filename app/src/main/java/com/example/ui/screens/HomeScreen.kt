@@ -381,42 +381,37 @@ private fun HomeHeaderCard(
 
     Row(
         modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
+        Surface(
+            shape = RoundedCornerShape(12.dp),
+            color = logoBackingColor,
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)),
+            modifier = Modifier.testTag("home_school_logo")
+        ) {
+            SubcomposeAsyncImage(
+                model = ImageRequest.Builder(context)
+                    .data(ZSME_LOGO_URL)
+                    .crossfade(true)
+                    .build(),
+                contentDescription = "Logo ZSME",
+                contentScale = ContentScale.Fit,
+                modifier = Modifier
+                    .padding(horizontal = 8.dp, vertical = 4.dp)
+                    .heightIn(min = 32.dp, max = 42.dp)
+                    .widthIn(max = 132.dp),
+                loading = {
+                    HomeSchoolLogoFallback()
+                },
+                error = {
+                    HomeSchoolLogoFallback()
+                }
+            )
+        }
         Box(
             modifier = Modifier.weight(1f),
-            contentAlignment = Alignment.CenterStart
-        ) {
-            Surface(
-                shape = RoundedCornerShape(12.dp),
-                color = logoBackingColor,
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)),
-                modifier = Modifier.testTag("home_school_logo")
-            ) {
-                SubcomposeAsyncImage(
-                    model = ImageRequest.Builder(context)
-                        .data(ZSME_LOGO_URL)
-                        .crossfade(true)
-                        .build(),
-                    contentDescription = "Logo ZSME",
-                    contentScale = ContentScale.Fit,
-                    modifier = Modifier
-                        .padding(horizontal = 8.dp, vertical = 4.dp)
-                        .heightIn(min = 32.dp, max = 42.dp)
-                        .widthIn(max = 152.dp),
-                    loading = {
-                        HomeSchoolLogoFallback()
-                    },
-                    error = {
-                        HomeSchoolLogoFallback()
-                    }
-                )
-            }
-        }
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(4.dp)
+            contentAlignment = Alignment.CenterEnd
         ) {
             if (isTeacherMode) {
                 TeacherProfilePill(
@@ -431,18 +426,18 @@ private fun HomeHeaderCard(
                     onClick = onPickClass
                 )
             }
-            IconButton(
-                onClick = onRefresh,
-                enabled = !isRefreshing,
-                modifier = Modifier
-                    .minimumInteractiveComponentSize()
-                    .testTag("home_refresh_button")
-            ) {
-                Icon(
-                    imageVector = Icons.Filled.Refresh,
-                    contentDescription = "Odśwież plan i zastępstwa"
-                )
-            }
+        }
+        IconButton(
+            onClick = onRefresh,
+            enabled = !isRefreshing,
+            modifier = Modifier
+                .minimumInteractiveComponentSize()
+                .testTag("home_refresh_button")
+        ) {
+            Icon(
+                imageVector = Icons.Filled.Refresh,
+                contentDescription = "Odśwież plan i zastępstwa"
+            )
         }
     }
 }
