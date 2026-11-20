@@ -1204,4 +1204,53 @@ class ZsmeParserAndMatcherTest {
             ScheduleFilterMatcher.classifyTeacherSubstitution(duty, "MN", "Nowak")
         )
     }
+
+    @Test
+    fun `inverted substitution headers and za wording classify conducting teacher correctly`() {
+        val html = """
+            <html><body>
+              <h2>Zastępstwa 18.11.2026</h2>
+              <table>
+                <tr><th>Klasa</th><th>Lekcja</th><th>Zastępstwo za</th><th>Przedmiot</th><th>Zastępca</th><th>Sala</th></tr>
+                <tr><td>2TI</td><td>2</td><td>Anna Nowak</td><td>Matematyka</td><td>Jan Kowalski</td><td>204</td></tr>
+              </table>
+              <table>
+                <tr><th>Klasa</th><th>Lekcja</th><th>Nauczyciel</th><th>Przedmiot</th><th>Uwagi</th><th>Sala</th></tr>
+                <tr><td>3TM</td><td>3</td><td>Jan Kowalski</td><td>Fizyka</td><td>za A. Nowak</td><td>105</td></tr>
+              </table>
+              <table>
+                <tr><th>Klasa</th><th>Lekcja</th><th>Zastępstwo</th></tr>
+                <tr><td>1A</td><td>4</td><td>Jan Kowalski zastępuje P. Mazur</td></tr>
+              </table>
+            </body></html>
+        """.trimIndent()
+
+        val snapshot = ZsmeHtmlParser.parseSubstitutions(html, "https://sekretariat.zsme.pl/tv.php")
+        assertEquals(3, snapshot.items.size)
+
+        // All 3 rows mean Jan Kowalski IS CONDUCTING (never REPLACED / ZA CIEBIE!)
+        snapshot.items.forEachIndexed { index, item ->
+            val role = ScheduleFilterMatcher.classifyTeacherSubstitution(item, "JK", "Jan Kowalski")
+            assertEquals(
+                "Row $index should classify Jan Kowalski as CONDUCTING",
+                ScheduleFilterMatcher.TeacherSubstitutionMatch.CONDUCTING,
+                role
+            )
+        }
+
+        // Meanwhile Anna Nowak on rows 0 and 1 is REPLACED
+        assertEquals(
+            ScheduleFilterMatcher.TeacherSubstitutionMatch.REPLACED,
+            ScheduleFilterMatcher.classifyTeacherSubstitution(snapshot.items[0], "AN", "Anna Nowak")
+        )
+        assertEquals(
+            ScheduleFilterMatcher.TeacherSubstitutionMatch.REPLACED,
+            ScheduleFilterMatcher.classifyTeacherSubstitution(snapshot.items[1], "AN", "A. Nowak")
+        )
+        // P. Mazur on row 2 is REPLACED
+        assertEquals(
+            ScheduleFilterMatcher.TeacherSubstitutionMatch.REPLACED,
+            ScheduleFilterMatcher.classifyTeacherSubstitution(snapshot.items[2], "PM", "P. Mazur")
+        )
+    }
 }

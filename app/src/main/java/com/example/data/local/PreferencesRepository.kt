@@ -11,6 +11,7 @@ import androidx.datastore.preferences.preferencesDataStore
 import com.example.data.model.ApkCandidate
 import com.example.data.model.ClassTimetable
 import com.example.data.model.NotificationLogEntry
+import com.example.data.model.PrincipalDayOff
 import com.example.data.model.SchoolClass
 import com.example.data.model.StudentGroup
 import com.example.data.model.SubstitutionsSnapshot
@@ -65,6 +66,7 @@ class PreferencesRepository(private val context: Context) {
         val APP_UPDATE_URL = stringPreferencesKey("app_update_url")
         val AUTO_CHECK_APP_UPDATES = booleanPreferencesKey("auto_check_app_updates")
         val TEACHER_ADDITIONAL_SCHOOLS_JSON = stringPreferencesKey("teacher_additional_schools_json")
+        val PRINCIPAL_DAYS_OFF_JSON = stringPreferencesKey("principal_days_off_json")
 
         val CACHED_CLASSES_JSON = stringPreferencesKey("cached_classes_json")
         val CACHED_CATALOG_JSON = stringPreferencesKey("cached_catalog_json")
@@ -90,6 +92,10 @@ class PreferencesRepository(private val context: Context) {
         val extraSchools = prefs[Keys.TEACHER_ADDITIONAL_SCHOOLS_JSON]?.let { raw ->
             runCatching { json.decodeFromString<List<TeacherSchoolConfig>>(raw) }.getOrNull()
         }.orEmpty()
+
+        val customDaysOff = prefs[Keys.PRINCIPAL_DAYS_OFF_JSON]?.let { raw ->
+            runCatching { json.decodeFromString<List<PrincipalDayOff>>(raw) }.getOrNull()
+        }.orEmpty().sortedBy { it.dateIso }
 
         UserPreferences(
             userRole = userRole,
@@ -123,7 +129,8 @@ class PreferencesRepository(private val context: Context) {
                 ?.takeIf { it.isNotBlank() && !it.equals(UserPreferences.LEGACY_GITHUB_V106_URL, ignoreCase = true) }
                 ?: UserPreferences.DEFAULT_GITHUB_RELEASES_URL,
             autoCheckAppUpdates = prefs[Keys.AUTO_CHECK_APP_UPDATES] ?: true,
-            additionalSchools = extraSchools
+            additionalSchools = extraSchools,
+            principalDaysOff = customDaysOff
         )
     }
 
@@ -241,6 +248,32 @@ class PreferencesRepository(private val context: Context) {
             val next = current.filterNot { it.id == schoolId }
             prefs[Keys.TEACHER_ADDITIONAL_SCHOOLS_JSON] = json.encodeToString(next)
             prefs[Keys.LAST_NOTIFIED_TIMETABLE_HASH] = ""
+        }
+    }
+
+    suspend fun addPrincipalDaysOff(datesIso: List<String>, title: String) {
+        val cleanTitle = title.trim().ifBlank { "Dzień dyrektorski" }
+        val cleanDates = datesIso.map { it.trim() }.filter { it.matches(Regex("""\d{4}-\d{2}-\d{2}""")) }
+        if (cleanDates.isEmpty()) return
+        context.dataStore.edit { prefs ->
+            val current = prefs[Keys.PRINCIPAL_DAYS_OFF_JSON]?.let { raw ->
+                runCatching { json.decodeFromString<List<PrincipalDayOff>>(raw) }.getOrNull()
+            }.orEmpty().associateBy { it.dateIso }.toMutableMap()
+            for (d in cleanDates) {
+                current[d] = PrincipalDayOff(dateIso = d, title = cleanTitle)
+            }
+            val sorted = current.values.sortedBy { it.dateIso }
+            prefs[Keys.PRINCIPAL_DAYS_OFF_JSON] = json.encodeToString(sorted)
+        }
+    }
+
+    suspend fun removePrincipalDayOff(dateIso: String) {
+        context.dataStore.edit { prefs ->
+            val current = prefs[Keys.PRINCIPAL_DAYS_OFF_JSON]?.let { raw ->
+                runCatching { json.decodeFromString<List<PrincipalDayOff>>(raw) }.getOrNull()
+            }.orEmpty()
+            val next = current.filterNot { it.dateIso == dateIso.trim() }.sortedBy { it.dateIso }
+            prefs[Keys.PRINCIPAL_DAYS_OFF_JSON] = json.encodeToString(next)
         }
     }
 

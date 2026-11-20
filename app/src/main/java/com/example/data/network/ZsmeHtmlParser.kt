@@ -869,9 +869,11 @@ object ZsmeHtmlParser {
         var colRoom = -1
         var colNote = -1
 
-        var currentSectionTeacher = ""
+        var currentSectionAbsentTeacher = ""
+        var currentSectionSubTeacher = ""
         var currentSectionClass = ""
         var currentSectionDate = defaultDate
+        var absentHeaderWasExplicit = false
 
         val firstRow = grid.first()
         var startRow = 0
@@ -892,12 +894,19 @@ object ZsmeHtmlParser {
                     h.contains("klas") || h.contains("oddz") || (h.contains("grup") && colClass == -1) -> colClass = idx
                     h.contains("lekc") || h.contains("godz") || h == "nr" || h.contains("l.p") ||
                         (h.contains("przerw") && colPeriod == -1) || (h.contains("po lekc") && colPeriod == -1) -> colPeriod = idx
-                    h.contains("zastepuj") || h.contains("dyzurujac") || h.contains("dyzurny") ||
+                    h.contains("nieobec") || h.contains("za kogo") || h.contains("kogo zast") ||
+                        h.contains("zastepowan") || h.contains("zastepstwo za") || h.contains("zast. za") ||
+                        h.contains("osoba nieob") -> {
+                        colAbsent = idx
+                        absentHeaderWasExplicit = true
+                    }
+                    h.contains("zastepc") || h.contains("zastepuj") || h.contains("zastepuje") ||
+                        h.contains("dyzurujac") || h.contains("dyzurny") ||
                         h.contains("pelniac") || h.contains("prowadz") || h.contains("zmian") ||
-                        h.contains("kto") || h.contains("nowy") ||
-                        ((h.contains("zastepstw") || h == "zastepstwo") && colSub == -1) -> colSub = idx
-                    h.contains("nieobec") || h.contains("za kogo") || h.contains("zastepowan") ||
-                        (h.contains("nauczyciel") && colAbsent == -1) -> colAbsent = idx
+                        h.contains("kto") || h.contains("nowy") -> colSub = idx
+                    h.contains("nauczyciel") && colAbsent == -1 -> colAbsent = idx
+                    h.contains("nauczyciel") && colSub == -1 -> colSub = idx
+                    (h.contains("zastepstw") || h == "zastepstwo") && colSub == -1 -> colSub = idx
                     h.contains("przedm") || h.contains("zajec") || h.contains("zaje") ||
                         (h.contains("dyzur") && colSubject == -1) -> colSubject = idx
                     h.contains("sal") -> colRoom = idx
@@ -921,6 +930,7 @@ object ZsmeHtmlParser {
             if (distinctNonEmpty.size == 1 && (row.first().colspan >= 2 || row.size == 1)) {
                 val single = distinctNonEmpty.first()
                 val lowerSingle = single.lowercase()
+                val foldedSingle = ScheduleFilterMatcher.foldPolishDiacritics(lowerSingle)
                 when {
                     lowerSingle.startsWith("uwag") -> {
                         cleanSectionLines(single, isNote = true).forEach { outNotes.add(it) }
@@ -934,7 +944,31 @@ object ZsmeHtmlParser {
                         currentSectionClass = single
                     }
                     looksLikeHeaderTexts(listOf(single)) -> Unit
-                    single.length in 3..90 -> currentSectionTeacher = single
+                    single.length in 3..90 -> {
+                        val subSectionMatch = Regex(
+                            """^(?:nauczyciel\s+zast[eę]puj[aą]cy|zast[eę]puj[aą]cy|zast[eę]pca|prowadz[aą]cy|prowadzi|dy[zż]uruj[aą]cy)\s*:?\s*(.+)$""",
+                            RegexOption.IGNORE_CASE
+                        ).find(single)
+                        val absSectionMatch = Regex(
+                            """^(?:nieobecny|nieobecna|zast[eę]pstwa?\s+za|za\s+nauczyciela|za)\s*:?\s*(.+)$""",
+                            RegexOption.IGNORE_CASE
+                        ).find(single)
+                        when {
+                            subSectionMatch != null -> {
+                                currentSectionSubTeacher = subSectionMatch.groupValues[1].trim()
+                                currentSectionAbsentTeacher = ""
+                            }
+                            absSectionMatch != null -> {
+                                currentSectionAbsentTeacher = absSectionMatch.groupValues[1].trim()
+                                currentSectionSubTeacher = ""
+                            }
+                            else -> {
+                                currentSectionAbsentTeacher = single
+                                currentSectionSubTeacher = ""
+                            }
+                        }
+                        Unit
+                    }
                 }
                 continue
             }
@@ -952,9 +986,9 @@ object ZsmeHtmlParser {
             val period = values.getOrNull(colPeriod).orEmpty()
                 .ifBlank { values.firstOrNull { it.matches(Regex("""^\d{1,2}\.?(?:\s*[-–,;]\s*\d{1,2}\.?)*(?:\s*\(.*\))?$""")) }.orEmpty() }
 
-            var absent = values.getOrNull(colAbsent).orEmpty().ifBlank { currentSectionTeacher }
+            var absent = values.getOrNull(colAbsent).orEmpty().ifBlank { currentSectionAbsentTeacher }
             val subject = values.getOrNull(colSubject).orEmpty()
-            var substitute = values.getOrNull(colSub).orEmpty()
+            var substitute = values.getOrNull(colSub).orEmpty().ifBlank { currentSectionSubTeacher }
             val room = values.getOrNull(colRoom).orEmpty()
                 .ifBlank {
                     if (colRoom == -1) values.firstOrNull { isLikelyRoomCell(it) }.orEmpty() else ""
@@ -972,15 +1006,58 @@ object ZsmeHtmlParser {
                 if (colSub == -1 && subject.isNotBlank()) remainingText else ""
             }
 
-            if (absent.isBlank() || resolvedSubstitute.isBlank()) {
+            // Detect explicit inverted / za-prefixed patterns even when both columns were populated
+            val subOnlyZaMatch = Regex(
+                """^\s*(?:w\s+zast[eę]pstwie\s+za|zast[eę]pstwo\s+za|zast\.?\s+za|zast[eę]puj[eę]|zastepuj[e]?|za)\s*:?\s+([^:;\n()–-]+?)\s*$""",
+                RegexOption.IGNORE_CASE
+            ).find(resolvedSubstitute)
+
+            if (subOnlyZaMatch != null) {
+                val targetAbsent = subOnlyZaMatch.groupValues[1].trim().trim('(', ')', '.', ',')
+                if (targetAbsent.isNotBlank()) {
+                    val conductor = absent.takeIf {
+                        it.isNotBlank() && !it.equals(targetAbsent, ignoreCase = true)
+                    }.orEmpty()
+                    absent = targetAbsent
+                    resolvedSubstitute = conductor
+                }
+            } else {
+                val noteOrSubjOnlyZa = listOf(note, resolvedSubject, remainingText)
+                    .mapNotNull { src ->
+                        Regex(
+                            """(?:^|[•,;]\s*|\()(?:w\s+zast[eę]pstwie\s+za|zast[eę]pstwo\s+za|zast\.?\s+za|za)\s*:?\s+([^:;\n()–-]+?)(?:\)|$|[•,;])""",
+                            RegexOption.IGNORE_CASE
+                        ).find(src)?.groupValues?.get(1)?.trim()?.trim('(', ')', '.', ',')
+                    }
+                    .firstOrNull { it.isNotBlank() }
+
+                if (!absentHeaderWasExplicit &&
+                    absent.isNotBlank() &&
+                    resolvedSubstitute.isBlank() &&
+                    noteOrSubjOnlyZa != null &&
+                    !absent.equals(noteOrSubjOnlyZa, ignoreCase = true)
+                ) {
+                    resolvedSubstitute = absent
+                    absent = noteOrSubjOnlyZa
+                }
+            }
+
+            val hasPairCueRegex = Regex(
+                """(?:^|\s|\()za\s*:?\s+|zast[eę]puj[eę]|->|→""",
+                RegexOption.IGNORE_CASE
+            )
+            if (absent.isBlank() || resolvedSubstitute.isBlank() || hasPairCueRegex.containsMatchIn(absent) || hasPairCueRegex.containsMatchIn(resolvedSubstitute)) {
                 val pairSource = listOf(resolvedSubstitute, absent, resolvedSubject, note, remainingText)
-                    .firstOrNull { it.contains(" za ", ignoreCase = true) || it.contains("->") || it.contains("→") }
+                    .firstOrNull { hasPairCueRegex.containsMatchIn(it) }
                 if (!pairSource.isNullOrBlank()) {
                     val (parsedAbsent, parsedSub) = extractTeacherPairFromText(pairSource)
-                    if (parsedAbsent.isNotBlank() && (absent.isBlank() || pairSource == absent)) {
+                    if (parsedAbsent.isNotBlank() && (absent.isBlank() || pairSource == absent || hasPairCueRegex.containsMatchIn(pairSource) && pairSource == resolvedSubstitute && parsedSub.isBlank())) {
+                        if (pairSource == resolvedSubstitute && parsedSub.isBlank() && absent.isNotBlank() && !absent.equals(parsedAbsent, ignoreCase = true)) {
+                            resolvedSubstitute = absent
+                        }
                         absent = parsedAbsent
                     }
-                    if (parsedSub.isNotBlank() && (resolvedSubstitute.isBlank() || pairSource == resolvedSubstitute)) {
+                    if (parsedSub.isNotBlank() && (resolvedSubstitute.isBlank() || pairSource == resolvedSubstitute || pairSource == absent)) {
                         resolvedSubstitute = parsedSub
                     }
                 }
@@ -1183,9 +1260,9 @@ object ZsmeHtmlParser {
             texts.joinToString(" ") { it.trim().lowercase() }
         )
         val keywords = listOf(
-            "klasa", "oddzial", "lekcja", "nauczyciel", "zastepstwo",
+            "klasa", "oddzial", "lekcja", "nauczyciel", "zastepstwo", "zastepca",
             "zastepujacy", "przedmiot", "sala", "uwagi", "godz",
-            "dyzur", "przerwa", "miejsce", "pelniacy", "zastepuje", "osoba", "za kogo"
+            "dyzur", "przerwa", "miejsce", "pelniacy", "zastepuje", "osoba", "za kogo", "kogo zastepuje"
         )
         return keywords.count { joined.contains(it) } >= 2
     }
@@ -1395,7 +1472,7 @@ object ZsmeHtmlParser {
 
     private fun extractTeacherPairFromText(rawText: String): Pair<String, String> {
         val clean = rawText
-            .replace(Regex("""^(?:dyżury?|dyzury?)\s*[:\-–]\s*""", RegexOption.IGNORE_CASE), "")
+            .replace(Regex("""^(?:dyżury?|dyzury?|zastępstw[ao]?|zastepstw[ao]?)\s*[:\-–]\s*""", RegexOption.IGNORE_CASE), "")
             .trim()
         if (clean.isBlank()) return "" to ""
 
@@ -1407,9 +1484,9 @@ object ZsmeHtmlParser {
             if (left.isNotBlank() || right.isNotBlank()) return left to right
         }
 
-        // Pattern 2: "za <Absent>: <Substitute>" / "za <Absent> - <Substitute>" / "za <Absent> pełni <Substitute>"
+        // Pattern 2: "za[:] <Absent>: <Substitute>" / "za <Absent> - <Substitute>" / "za <Absent> pełni <Substitute>"
         val zaThenSub = Regex(
-            """\bza\s+([^:;\n()–-]+?)\s*(?::|–|-|\s+pełni\s+|\s+pelni\s+|\s+zastępuje\s+|\s+zastepuje\s+)\s*(.+)$""",
+            """\bza\s*:?\s+([^:;\n()–-]+?)\s*(?::|–|-|\s+pełni\s+|\s+pelni\s+|\s+zastępuje\s+|\s+zastepuje\s+)\s*(.+)$""",
             RegexOption.IGNORE_CASE
         ).find(clean)
         if (zaThenSub != null) {
@@ -1418,9 +1495,19 @@ object ZsmeHtmlParser {
             if (absent.isNotBlank() || sub.isNotBlank()) return absent to sub
         }
 
-        // Pattern 3: "<Substitute> za <Absent>" or "<Substitute> (za <Absent>)"
+        // Pattern 2b: Leading "za <Absent>" / "zastępstwo za <Absent>" without conducting teacher
+        val leadingZaOnly = Regex(
+            """^\s*(?:w\s+zast[eę]pstwie\s+za|zast[eę]pstwo\s+za|zast\.?\s+za|za)\s*:?\s+([^:;\n()–-]+?)\s*$""",
+            RegexOption.IGNORE_CASE
+        ).find(clean)
+        if (leadingZaOnly != null) {
+            val absent = leadingZaOnly.groupValues[1].trim().trim('(', ')', '.', ',')
+            if (absent.isNotBlank()) return absent to ""
+        }
+
+        // Pattern 3: "<Substitute> za <Absent>" / "<Substitute> (za <Absent>)" / "<Substitute> zastępuje <Absent>"
         val subThenZa = Regex(
-            """^(.+?)\s*\(?\bza\s+([^()]+?)\)?(?:\s*[-–,;].*)?$""",
+            """^(.+?)\s*\(?(?:\bw\s+zast[eę]pstwie\s+za|\bzast[eę]pstwo\s+za|\bzast\.?\s+za|\bza|\bzast[eę]puj[eę]|\bzastepuj[e]?)\s*:?\s+([^()]+?)\)?(?:\s*[-–,;].*)?$""",
             RegexOption.IGNORE_CASE
         ).find(clean)
         if (subThenZa != null) {
@@ -1433,7 +1520,7 @@ object ZsmeHtmlParser {
             val absent = subThenZa.groupValues[2].trim().trim('(', ')', '.', ',')
             val isLeftOnlyContext = leftCandidate.isBlank() ||
                 ScheduleFilterMatcher.foldPolishDiacritics(leftCandidate).lowercase()
-                    .matches(Regex("""^(?:dyzur.*|przerwa.*|po\s+\d+.*|przed\s+\d+.*)$"""))
+                    .matches(Regex("""^(?:dyzur.*|przerwa.*|po\s+\d+.*|przed\s+\d+.*|zastepstw.*|w)$"""))
             return absent to (if (isLeftOnlyContext) "" else leftCandidate)
         }
 

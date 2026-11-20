@@ -209,4 +209,46 @@ class LiveScheduleTrackerTest {
         assertEquals("Matematyka", status.firstSlot.items.first().lesson.subject)
         assertEquals(30 * 60, status.remainingSeconds)
     }
+
+    @Test
+    fun `public holiday and custom principal day off return Holiday status and find next real school day`() {
+        // Wednesday Nov 11, 2026 -> Narodowe Święto Niepodległości
+        val nov11Now = millisFor(2026, Calendar.NOVEMBER, 11, 10, 0, 0)
+        val holidayEval = LiveScheduleTracker.evaluate(
+            timetable = sampleTimetable(),
+            substitutions = null,
+            userRole = UserRole.STUDENT,
+            selectedClassName = "2TI",
+            selectedGroup = StudentGroup.GROUP_1,
+            customGroupFilter = "",
+            teacherAbbr = "",
+            teacherFullName = "",
+            nowMillis = nov11Now,
+            timeZone = warsawTz
+        )
+        assertTrue(holidayEval.status is LiveScheduleStatus.Holiday)
+        val holidayStatus = holidayEval.status as LiveScheduleStatus.Holiday
+        assertEquals("Narodowe Święto Niepodległości", holidayStatus.title)
+
+        // Monday Nov 16, 2026 marked as PrincipalDayOff -> skips Nov 16 and points to Jutro (Wtorek)
+        val monNow = millisFor(2026, Calendar.NOVEMBER, 16, 9, 0, 0)
+        val principalEval = LiveScheduleTracker.evaluate(
+            timetable = sampleTimetable(),
+            substitutions = null,
+            userRole = UserRole.STUDENT,
+            selectedClassName = "2TI",
+            selectedGroup = StudentGroup.GROUP_1,
+            customGroupFilter = "",
+            teacherAbbr = "",
+            teacherFullName = "",
+            customDaysOff = listOf(com.example.data.model.PrincipalDayOff("2026-11-16", "Dzień dyrektorski")),
+            nowMillis = monNow,
+            timeZone = warsawTz
+        )
+        assertTrue(principalEval.status is LiveScheduleStatus.Holiday)
+        val pStatus = principalEval.status as LiveScheduleStatus.Holiday
+        assertEquals("Dzień dyrektorski", pStatus.title)
+        assertEquals("Jutro (Wtorek)", pStatus.nextSchoolDayLabel)
+        assertEquals("J. polski", pStatus.nextDayFirstSlot?.items?.first()?.lesson?.subject)
+    }
 }

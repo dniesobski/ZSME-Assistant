@@ -65,6 +65,12 @@ data class TeacherSchoolConfig(
 )
 
 @Serializable
+data class PrincipalDayOff(
+    val dateIso: String, // yyyy-MM-dd
+    val title: String = "Dzień dyrektorski"
+)
+
+@Serializable
 data class LessonEntry(
     val period: Int,
     val timeRange: String,
@@ -215,7 +221,8 @@ data class UserPreferences(
     val lastApkContentLength: Long = 0L,
     val appUpdateUrl: String = DEFAULT_GITHUB_RELEASES_URL,
     val autoCheckAppUpdates: Boolean = true,
-    val additionalSchools: List<TeacherSchoolConfig> = emptyList()
+    val additionalSchools: List<TeacherSchoolConfig> = emptyList(),
+    val principalDaysOff: List<PrincipalDayOff> = emptyList()
 ) {
     fun allTeacherSchools(): List<TeacherSchoolConfig> {
         val list = mutableListOf<TeacherSchoolConfig>()
@@ -438,46 +445,107 @@ object ScheduleFilterMatcher {
             return false
         }
 
-        val subTextForConducting = item.substituteTeacher.replace(
-            Regex("""\(?\bza\s+[^:;\n()–-]+(?:\s+[^:;\n()–-]+){0,3}\)?""", RegexOption.IGNORE_CASE),
-            " "
-        ).trim()
+        val zaTargetRegex = Regex(
+            """\(?(?:\bw\s+zast[eę]pstwie\s+za|\bzast[eę]pstwo\s+za|\bzast\.?\s+za|\bza|\bzamiast)\s*:?\s+([^:;\n()–-]+(?:\s+[^:;\n()–-]+){0,3})\)?""",
+            RegexOption.IGNORE_CASE
+        )
+        val replaceVerbTargetRegex = Regex(
+            """\(?\b(?:zast[eę]puj[eę]|zastepuj[e]?)\s*:?\s+([^:;\n()–-]+(?:\s+[^:;\n()–-]+){0,3})\)?""",
+            RegexOption.IGNORE_CASE
+        )
+        val conductorPrefixRegex = Regex(
+            """\(?(?:\bprowadz[i]|\bzast[eę]pca|\bnauczyciel\s+zast[eę]puj[aą]cy)\s*:?\s+([^:;\n()–-]+(?:\s+[^:;\n()–-]+){0,3})\)?""",
+            RegexOption.IGNORE_CASE
+        )
+
+        fun analyzeDirectionalText(rawText: String): TeacherSubstitutionMatch? {
+            if (rawText.isBlank()) return null
+
+            val arrowParts = rawText.split(Regex("""\s*(?:->|→)\s*"""), limit = 2)
+            if (arrowParts.size == 2) {
+                val leftMatch = fieldMatches(arrowParts[0])
+                val rightMatch = fieldMatches(arrowParts[1])
+                if (rightMatch && !leftMatch) return TeacherSubstitutionMatch.CONDUCTING
+                if (leftMatch && !rightMatch) return TeacherSubstitutionMatch.REPLACED
+                if (rightMatch) return TeacherSubstitutionMatch.CONDUCTING
+            }
+
+            val targetMatches = (zaTargetRegex.findAll(rawText) + replaceVerbTargetRegex.findAll(rawText)).toList()
+            if (targetMatches.isNotEmpty()) {
+                val matchedReplaced = targetMatches.any { fieldMatches(it.groupValues[1]) }
+                var outside = rawText
+                for (m in targetMatches.sortedByDescending { it.range.first }) {
+                    if (m.range.first >= 0 && m.range.last < outside.length) {
+                        outside = outside.removeRange(m.range)
+                    }
+                }
+                val matchedConductor = fieldMatches(outside)
+                if (matchedConductor && !matchedReplaced) return TeacherSubstitutionMatch.CONDUCTING
+                if (matchedReplaced && !matchedConductor) return TeacherSubstitutionMatch.REPLACED
+                if (matchedConductor) return TeacherSubstitutionMatch.CONDUCTING
+                if (matchedReplaced) return TeacherSubstitutionMatch.REPLACED
+            }
+
+            val explicitConductorMatches = conductorPrefixRegex.findAll(rawText).toList()
+            if (explicitConductorMatches.isNotEmpty()) {
+                if (explicitConductorMatches.any { fieldMatches(it.groupValues[1]) }) {
+                    return TeacherSubstitutionMatch.CONDUCTING
+                }
+            }
+            return null
+        }
+
+        // 1. Check explicit directional phrasing inside substituteTeacher and absentTeacher first
+        val subExplicitOnlyZaOrReplace = Regex(
+            """^\s*(?:w\s+zast[eę]pstwie\s+za|zast[eę]pstwo\s+za|zast\.?\s+za|za|zast[eę]puj[eę]|zastepuj[e]?)\s*:?\s+([^:;\n()–-]+?)\s*$""",
+            RegexOption.IGNORE_CASE
+        ).find(item.substituteTeacher.trim())
+
+        if (subExplicitOnlyZaOrReplace != null) {
+            val targetAbsentText = subExplicitOnlyZaOrReplace.groupValues[1]
+            val matchesTargetAbsent = fieldMatches(targetAbsentText)
+            val matchesAbsentCol = fieldMatches(item.absentTeacher)
+            if (matchesTargetAbsent) return TeacherSubstitutionMatch.REPLACED
+            if (matchesAbsentCol) return TeacherSubstitutionMatch.CONDUCTING
+        }
+
+        analyzeDirectionalText(item.substituteTeacher)?.let { return it }
+        analyzeDirectionalText(item.absentTeacher)?.let { return it }
+
+        // Check standard two-column layout: absentTeacher = replaced teacher, substituteTeacher = conducting teacher
+        val subTextForConducting = item.substituteTeacher
+            .replace(zaTargetRegex, " ")
+            .replace(replaceVerbTargetRegex, " ")
+            .trim()
         val inSubstitute = fieldMatches(subTextForConducting)
-        val inAbsent = fieldMatches(item.absentTeacher)
         if (inSubstitute) return TeacherSubstitutionMatch.CONDUCTING
-        if (inAbsent) return TeacherSubstitutionMatch.REPLACED
+
+        val inAbsent = fieldMatches(item.absentTeacher)
+        if (inAbsent) {
+            // Guard: if absentTeacher came from a generic column, check whether note/subject clearly says "za <other teacher>"
+            val contextHint = listOf(item.note, item.subject).filter { it.isNotBlank() }.joinToString(" • ")
+            val noteZaOrReplace = (zaTargetRegex.findAll(contextHint) + replaceVerbTargetRegex.findAll(contextHint)).toList()
+            if (noteZaOrReplace.isNotEmpty()) {
+                val otherIsAbsent = noteZaOrReplace.any { !fieldMatches(it.groupValues[1]) && it.groupValues[1].isNotBlank() }
+                val selfInZa = noteZaOrReplace.any { fieldMatches(it.groupValues[1]) }
+                if (otherIsAbsent && !selfInZa && item.substituteTeacher.isBlank()) {
+                    return TeacherSubstitutionMatch.CONDUCTING
+                }
+            }
+            return TeacherSubstitutionMatch.REPLACED
+        }
 
         val fallbackFields = listOf(item.note, item.subject, item.className).filter { it.isNotBlank() }
         for (rawField in fallbackFields) {
             if (!fieldMatches(rawField)) continue
-            val arrowParts = rawField.split(Regex("""\s*(?:->|→)\s*"""), limit = 2)
-            if (arrowParts.size == 2) {
-                if (fieldMatches(arrowParts[1])) return TeacherSubstitutionMatch.CONDUCTING
-                if (fieldMatches(arrowParts[0])) return TeacherSubstitutionMatch.REPLACED
-            }
-
-            val zaRegex = Regex(
-                """\bza\s+([^:;\n()–-]+(?:\s+[^:;\n()–-]+){0,3})""",
-                RegexOption.IGNORE_CASE
-            )
-            val zaMatches = zaRegex.findAll(rawField).toList()
-            if (zaMatches.isNotEmpty()) {
-                val matchedInsideZa = zaMatches.any { fieldMatches(it.groupValues[1]) }
-                var outsideZa = rawField
-                for (m in zaMatches.reversed()) {
-                    outsideZa = outsideZa.removeRange(m.range)
-                }
-                val matchedOutsideZa = fieldMatches(outsideZa)
-                if (matchedOutsideZa) return TeacherSubstitutionMatch.CONDUCTING
-                if (matchedInsideZa) return TeacherSubstitutionMatch.REPLACED
-            }
+            analyzeDirectionalText(rawField)?.let { return it }
 
             val foldedField = foldPolishDiacritics(rawField).lowercase()
             return if (
-                foldedField.contains("zastep") ||
                 foldedField.contains("prowadz") ||
                 foldedField.contains("pelni") ||
-                foldedField.contains("dyzur")
+                foldedField.contains("zastepc") ||
+                foldedField.contains("zastepuj")
             ) {
                 TeacherSubstitutionMatch.CONDUCTING
             } else {
@@ -865,9 +933,12 @@ object ScheduleFilterMatcher {
         dateHeading: String,
         lessonPeriod: Int,
         dayIndex: Int,
-        todayWeekdayIndex: Int?
+        todayWeekdayIndex: Int?,
+        lessonClassLabel: String = "",
+        teacherAbbr: String = "",
+        teacherFullName: String = ""
     ): SubstitutionItem? {
-        return substitutions.firstOrNull { sub ->
+        val candidates = substitutions.filter { sub ->
             !isDutyItem(sub) &&
                 substitutionAppliesToDay(
                     dateLabel = sub.dateLabel,
@@ -877,6 +948,25 @@ object ScheduleFilterMatcher {
                 ) &&
                 lessonPeriod in parseSubstitutionPeriods(sub.period)
         }
+        if (candidates.isEmpty()) return null
+
+        val hasTeacherFilter = teacherAbbr.isNotBlank() || teacherFullName.isNotBlank()
+        if (lessonClassLabel.isNotBlank()) {
+            val classMatches = candidates.filter { sub ->
+                sub.className.isBlank() || matchesClass(lessonClassLabel, sub.className)
+            }
+            if (classMatches.isNotEmpty()) {
+                return classMatches.firstOrNull { sub ->
+                    !hasTeacherFilter || classifyTeacherSubstitution(sub, teacherAbbr, teacherFullName) == TeacherSubstitutionMatch.REPLACED
+                } ?: classMatches.first()
+            }
+        }
+        if (hasTeacherFilter) {
+            return candidates.firstOrNull { sub ->
+                classifyTeacherSubstitution(sub, teacherAbbr, teacherFullName) == TeacherSubstitutionMatch.REPLACED
+            } ?: if (lessonClassLabel.isBlank()) candidates.first() else null
+        }
+        return candidates.first()
     }
 
     private fun extractArrivalPeriod(text: String): Int? {

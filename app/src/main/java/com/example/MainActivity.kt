@@ -12,12 +12,16 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material.icons.Icons
@@ -36,7 +40,9 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -55,14 +61,15 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.core.content.FileProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavDestination.Companion.hasRoute
@@ -78,6 +85,7 @@ import com.example.data.model.UserPreferences
 import com.example.data.model.UserRole
 import com.example.mesh.MeshRadioState
 import com.example.notifications.NotificationHelper
+import com.example.ui.AppUpdateUiState
 import com.example.ui.ZsmeUiState
 import com.example.ui.ZsmeViewModel
 import com.example.ui.components.ClassPickerDialog
@@ -86,11 +94,16 @@ import com.example.ui.navigation.ZsmeRoute
 import com.example.ui.screens.HomeScreen
 import com.example.ui.screens.MessengerScreen
 import com.example.ui.screens.PortalWebViewScreen
+import com.example.ui.screens.SchoolCalendarScreen
 import com.example.ui.screens.SettingsScreen
 import com.example.ui.screens.SubstitutionsScreen
 import com.example.ui.screens.TimetableScreen
 import com.example.ui.theme.ZsmePlanTheme
+import com.example.update.AppUpdateInstaller
+import com.example.update.AppUpdateInstallerBridge
+import com.example.update.InstallSessionEvent
 import java.io.File
+import java.util.Locale
 
 class MainActivity : ComponentActivity() {
 
@@ -173,21 +186,69 @@ fun ZsmeAppShell(
     val snackbarHostState = remember { SnackbarHostState() }
 
     val context = LocalContext.current
+    var showInstallPermissionDialog by remember { mutableStateOf(false) }
+
+    fun startDirectInAppInstall(apkFile: File) {
+        viewModel.markUpdateInstalling(true, "Instalowanie aktualizacji bezpośrednio w aplikacji...")
+        AppUpdateInstaller.installApkInApp(context, apkFile).onFailure { err ->
+            AppUpdateInstaller.launchLegacyFileProviderInstaller(context, apkFile).onSuccess {
+                viewModel.markUpdateInstalling(false, "Uruchomiono instalator systemowy.")
+            }.onFailure {
+                viewModel.onInstallSessionFailed(err.message ?: "Nie udało się uruchomić instalacji APK.")
+            }
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        AppUpdateInstallerBridge.events.collect { event ->
+            when (event) {
+                is InstallSessionEvent.PendingUserAction -> {
+                    viewModel.markUpdateInstalling(true, "Potwierdź instalację w oknie systemowym...")
+                    val intentWithFlags = Intent(event.confirmIntent).apply {
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
+                    runCatching { context.startActivity(intentWithFlags) }.onFailure { err ->
+                        val fallbackFile = uiState.appUpdateState.downloadedApkPath?.let { File(it) }
+                        if (fallbackFile != null && fallbackFile.exists()) {
+                            AppUpdateInstaller.launchLegacyFileProviderInstaller(context, fallbackFile)
+                            viewModel.markUpdateInstalling(false, "Uruchomiono instalator systemowy.")
+                        } else {
+                            viewModel.onInstallSessionFailed(err.message ?: "Nie udało się otworzyć okna instalacji.")
+                        }
+                    }
+                }
+
+                is InstallSessionEvent.Succeeded -> {
+                    viewModel.onInstallSessionSucceeded()
+                }
+
+                is InstallSessionEvent.Failed -> {
+                    val fallbackFile = uiState.appUpdateState.downloadedApkPath?.let { File(it) }
+                    if (event.shouldFallbackToActionView && fallbackFile != null && fallbackFile.exists()) {
+                        AppUpdateInstaller.launchLegacyFileProviderInstaller(context, fallbackFile)
+                        viewModel.markUpdateInstalling(false, "Otwarto systemowy instalator APK.")
+                    } else {
+                        viewModel.onInstallSessionFailed(event.message)
+                    }
+                }
+            }
+        }
+    }
 
     val unknownSourcesLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
     ) {
         val pendingPath = uiState.appUpdateState.pendingInstallApkPath
+            ?: uiState.appUpdateState.downloadedApkPath
         if (!pendingPath.isNullOrBlank()) {
             val file = File(pendingPath)
-            val canInstall = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.packageManager.canRequestPackageInstalls()
-            } else {
-                true
-            }
-            if (canInstall && file.exists()) {
-                launchApkInstaller(context, file)
+            if (AppUpdateInstaller.canRequestPackageInstalls(context) && file.exists()) {
+                showInstallPermissionDialog = false
                 viewModel.consumePendingApkInstall()
+                startDirectInAppInstall(file)
+            } else {
+                viewModel.consumePendingApkInstall()
+                viewModel.markUpdateInstalling(false, "Zezwól na instalację pakietów, aby dokończyć aktualizację.")
             }
         }
     }
@@ -199,17 +260,12 @@ fun ZsmeAppShell(
             viewModel.consumePendingApkInstall()
             return@LaunchedEffect
         }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
-            !context.packageManager.canRequestPackageInstalls()
-        ) {
-            val intent = Intent(
-                Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
-                Uri.parse("package:${context.packageName}")
-            )
-            unknownSourcesLauncher.launch(intent)
+        if (!AppUpdateInstaller.canRequestPackageInstalls(context)) {
+            showInstallPermissionDialog = true
         } else {
-            launchApkInstaller(context, file)
+            showInstallPermissionDialog = false
             viewModel.consumePendingApkInstall()
+            startDirectInAppInstall(file)
         }
     }
 
@@ -261,7 +317,8 @@ fun ZsmeAppShell(
         )
     }
 
-    val isWebViewRoute = currentDestination?.hasRoute<ZsmeRoute.PortalWebView>() == true
+    val isFullScreenSubRoute = currentDestination?.hasRoute<ZsmeRoute.PortalWebView>() == true ||
+        currentDestination?.hasRoute<ZsmeRoute.SchoolCalendar>() == true
     val hasConfiguredTarget = if (uiState.preferences.userRole == UserRole.TEACHER) {
         uiState.preferences.allTeacherSchools().isNotEmpty() || uiState.preferences.teacherFullName.isNotBlank()
     } else {
@@ -301,7 +358,7 @@ fun ZsmeAppShell(
     }
 
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
-        val useNavigationRail = maxWidth >= 600.dp && !isWebViewRoute
+        val useNavigationRail = maxWidth >= 600.dp && !isFullScreenSubRoute
 
         Scaffold(
             modifier = Modifier.fillMaxSize(),
@@ -309,7 +366,7 @@ fun ZsmeAppShell(
             contentWindowInsets = WindowInsets.safeDrawing,
             snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
             bottomBar = {
-                if (!useNavigationRail && !isWebViewRoute) {
+                if (!useNavigationRail && !isFullScreenSubRoute) {
                     NavigationBar {
                         navItems.forEach { item ->
                             val selected = currentDestination?.hasRoute(item.route::class) == true
@@ -391,6 +448,9 @@ fun ZsmeAppShell(
                             onOpenTeacherSetup = { viewModel.setTeacherProfileDialogOpen(true) },
                             onOpenTimetable = { navigateToTopLevel(ZsmeRoute.Timetable) },
                             onOpenSubstitutions = { navigateToTopLevel(ZsmeRoute.Substitutions) },
+                            onOpenSchoolCalendar = {
+                                navController.navigate(ZsmeRoute.SchoolCalendar) { launchSingleTop = true }
+                            },
                             onStartAppUpdateDownload = viewModel::acceptStartupAppUpdate,
                             onInstallDownloadedApk = viewModel::installDownloadedApk
                         )
@@ -498,6 +558,9 @@ fun ZsmeAppShell(
                             onSaveAppUpdateUrl = viewModel::updateAppUpdateUrl,
                             onCheckAppUpdate = viewModel::checkForAppUpdate,
                             onInstallDownloadedApk = viewModel::installDownloadedApk,
+                            onOpenSchoolCalendar = {
+                                navController.navigate(ZsmeRoute.SchoolCalendar) { launchSingleTop = true }
+                            },
                             onOpenSekretariatWeb = {
                                 val subUrl = uiState.preferences.substitutionsUrl.ifBlank {
                                     UserPreferences.DEFAULT_SUBSTITUTIONS_URL
@@ -530,6 +593,15 @@ fun ZsmeAppShell(
                                     )
                                 )
                             }
+                        )
+                    }
+
+                    composable<ZsmeRoute.SchoolCalendar> {
+                        SchoolCalendarScreen(
+                            principalDaysOff = uiState.preferences.principalDaysOff,
+                            onAddPrincipalDaysOff = viewModel::addPrincipalDaysOff,
+                            onRemovePrincipalDayOff = viewModel::removePrincipalDayOff,
+                            onNavigateBack = { navController.popBackStack() }
                         )
                     }
 
@@ -622,22 +694,206 @@ fun ZsmeAppShell(
                 modifier = Modifier.testTag("startup_update_dialog")
             )
         }
+
+        if (uiState.appUpdateState.isUpdateProgressDialogVisible) {
+            InAppUpdateProgressDialog(
+                state = uiState.appUpdateState,
+                onDismiss = viewModel::dismissUpdateProgressDialog,
+                onRetryDownload = viewModel::acceptStartupAppUpdate,
+                onInstallNow = viewModel::installDownloadedApk
+            )
+        }
+
+        if (showInstallPermissionDialog) {
+            AlertDialog(
+                onDismissRequest = {
+                    showInstallPermissionDialog = false
+                    viewModel.consumePendingApkInstall()
+                },
+                icon = {
+                    Icon(
+                        imageVector = Icons.Filled.SystemUpdate,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                },
+                title = {
+                    Text(
+                        text = "Zezwól na aktualizację aplikacji",
+                        style = MaterialTheme.typography.titleLarge
+                    )
+                },
+                text = {
+                    Text(
+                        text = "Aby aplikacja ZSME Assistant mogła bezpośrednio zainstalować pobraną aktualizację, włącz w ustawieniach opcję „Zezwalaj z tego źródła”. Po powrocie instalacja rozpocznie się automatycznie.",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                                val intent = Intent(
+                                    Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                                    Uri.parse("package:${context.packageName}")
+                                )
+                                unknownSourcesLauncher.launch(intent)
+                            }
+                        },
+                        modifier = Modifier
+                            .minimumInteractiveComponentSize()
+                            .testTag("grant_install_permission_button")
+                    ) {
+                        Text("Otwórz ustawienia")
+                    }
+                },
+                dismissButton = {
+                    TextButton(
+                        onClick = {
+                            showInstallPermissionDialog = false
+                            viewModel.consumePendingApkInstall()
+                        },
+                        modifier = Modifier.minimumInteractiveComponentSize()
+                    ) {
+                        Text("Anuluj")
+                    }
+                }
+            )
+        }
     }
 }
 
-private fun launchApkInstaller(context: Context, apkFile: File) {
-    val uri = FileProvider.getUriForFile(
-        context,
-        "${context.packageName}.fileprovider",
-        apkFile
+@Composable
+private fun InAppUpdateProgressDialog(
+    state: AppUpdateUiState,
+    onDismiss: () -> Unit,
+    onRetryDownload: () -> Unit,
+    onInstallNow: () -> Unit
+) {
+    val targetVersion = state.checkResult?.candidate?.versionName
+        ?.takeIf { it.isNotBlank() }
+        ?.let { AppVersionHelper.formatDisplayVersion(it) }
+        ?: state.checkResult?.candidate?.fileName.orEmpty()
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = {
+            Icon(
+                imageVector = Icons.Filled.SystemUpdate,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary
+            )
+        },
+        title = {
+            Text(
+                text = if (targetVersion.isNotBlank()) "Aktualizacja $targetVersion" else "Aktualizacja aplikacji",
+                style = MaterialTheme.typography.titleLarge
+            )
+        },
+        text = {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                when {
+                    state.isChecking -> {
+                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                        Text(
+                            text = "Sprawdzanie najnowszej wersji na GitHubie...",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                    }
+
+                    state.isDownloading -> {
+                        LinearProgressIndicator(
+                            progress = { (state.downloadProgress.coerceIn(0, 100)) / 100f },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        val downloadedMb = state.downloadedBytes / (1024f * 1024f)
+                        val totalMb = state.totalBytes / (1024f * 1024f)
+                        val sizeText = if (state.totalBytes > 0L) {
+                            String.format(Locale.US, "%.1f / %.1f MB (%d%%)", downloadedMb, totalMb, state.downloadProgress)
+                        } else {
+                            String.format(Locale.US, "Pobrano %.1f MB...", downloadedMb)
+                        }
+                        Text(
+                            text = state.installStatusMessage ?: "Pobieranie aktualizacji...",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Text(
+                            text = sizeText,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+
+                    state.isInstalling -> {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(24.dp),
+                                strokeWidth = 2.5.dp
+                            )
+                            Text(
+                                text = state.installStatusMessage ?: "Trwa instalacja aktualizacji w aplikacji...",
+                                style = MaterialTheme.typography.bodyMedium
+                            )
+                        }
+                    }
+
+                    state.errorMessage != null -> {
+                        Text(
+                            text = state.errorMessage,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    }
+
+                    state.downloadedApkPath != null -> {
+                        Text(
+                            text = state.installStatusMessage ?: "Plik APK jest gotowy do zainstalowania.",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            when {
+                state.errorMessage != null -> {
+                    Button(
+                        onClick = onRetryDownload,
+                        modifier = Modifier.minimumInteractiveComponentSize()
+                    ) {
+                        Text("Spróbuj ponownie")
+                    }
+                }
+
+                !state.isChecking && !state.isDownloading && !state.isInstalling && state.downloadedApkPath != null -> {
+                    Button(
+                        onClick = onInstallNow,
+                        modifier = Modifier
+                            .minimumInteractiveComponentSize()
+                            .testTag("in_app_install_now_button")
+                    ) {
+                        Text("Zainstaluj teraz")
+                    }
+                }
+            }
+        },
+        dismissButton = {
+            TextButton(
+                onClick = onDismiss,
+                modifier = Modifier.minimumInteractiveComponentSize()
+            ) {
+                Text(if (state.isDownloading) "Pobieraj w tle" else "Zamknij")
+            }
+        },
+        modifier = Modifier.testTag("in_app_update_progress_dialog")
     )
-    val installIntent = Intent(Intent.ACTION_VIEW).apply {
-        setDataAndType(uri, "application/vnd.android.package-archive")
-        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION)
-    }
-    runCatching {
-        context.startActivity(installIntent)
-    }
 }
 
 @Composable

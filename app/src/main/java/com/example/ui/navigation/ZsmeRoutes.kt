@@ -19,6 +19,9 @@ sealed interface ZsmeRoute {
     data object Settings : ZsmeRoute
 
     @Serializable
+    data object SchoolCalendar : ZsmeRoute
+
+    @Serializable
     data class PortalWebView(
         val url: String,
         val title: String,

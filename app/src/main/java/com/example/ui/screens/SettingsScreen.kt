@@ -29,6 +29,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Badge
+import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Domain
 import androidx.compose.material.icons.filled.Edit
@@ -42,6 +43,7 @@ import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
+import java.util.Locale
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -116,6 +118,7 @@ fun SettingsScreen(
     onSaveAppUpdateUrl: (String) -> Unit,
     onCheckAppUpdate: (repoUrl: String?, forceDownload: Boolean) -> Unit,
     onInstallDownloadedApk: () -> Unit,
+    onOpenSchoolCalendar: () -> Unit,
     onOpenSekretariatWeb: () -> Unit,
     onOpenPlanWeb: () -> Unit,
     modifier: Modifier = Modifier
@@ -670,8 +673,30 @@ fun SettingsScreen(
                             progress = { (updateState.downloadProgress.coerceIn(0, 100)) / 100f },
                             modifier = Modifier.fillMaxWidth()
                         )
+                        val dlText = if (updateState.totalBytes > 0L) {
+                            String.format(
+                                Locale.US,
+                                "Pobieranie w aplikacji: %.1f / %.1f MB (%d%%)",
+                                updateState.downloadedBytes / (1024f * 1024f),
+                                updateState.totalBytes / (1024f * 1024f),
+                                updateState.downloadProgress
+                            )
+                        } else {
+                            String.format(
+                                Locale.US,
+                                "Pobieranie pliku APK: %.1f MB...",
+                                updateState.downloadedBytes / (1024f * 1024f)
+                            )
+                        }
                         Text(
-                            text = "Pobieranie pliku APK: ${updateState.downloadProgress}%",
+                            text = dlText,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    } else if (updateState.isInstalling) {
+                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                        Text(
+                            text = updateState.installStatusMessage ?: "Instalowanie aktualizacji w aplikacji...",
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.primary
                         )
@@ -921,7 +946,39 @@ fun SettingsScreen(
                 }
             }
 
-            // 6. Portale szkolne
+            // 6. Kalendarz dni wolnych i dyrektorskie
+            item(key = "school_calendar_card") {
+                SettingsSectionCard(
+                    title = "Kalendarz dni wolnych (Polska)",
+                    icon = Icons.Filled.CalendarMonth
+                ) {
+                    Text(
+                        text = "Przeglądaj polskie święta państwowe, przerwy świąteczne, wakacje i dodawaj własne dni dyrektorskie, aby odliczanie na ekranie głównym było zawsze dokładne.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Button(
+                        onClick = onOpenSchoolCalendar,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .minimumInteractiveComponentSize()
+                            .testTag("settings_open_school_calendar_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.CalendarMonth,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        val countSuffix = if (prefs.principalDaysOff.isNotEmpty()) {
+                            " (${prefs.principalDaysOff.size} dni dyr.)"
+                        } else ""
+                        Text("Otwórz kalendarz dni wolnych$countSuffix")
+                    }
+                }
+            }
+
+            // 7. Portale szkolne
             item(key = "portals_card") {
                 SettingsSectionCard(
                     title = "Bezpośredni podgląd WWW",

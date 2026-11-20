@@ -7,7 +7,8 @@ import java.util.TimeZone
 
 data class LiveLessonItem(
     val lesson: LessonEntry,
-    val substitution: SubstitutionItem? = null
+    val substitution: SubstitutionItem? = null,
+    val teacherMatch: ScheduleFilterMatcher.TeacherSubstitutionMatch = ScheduleFilterMatcher.TeacherSubstitutionMatch.NONE
 )
 
 data class LiveLessonSlot(
@@ -49,6 +50,13 @@ sealed interface LiveScheduleStatus {
         val nextDayLabel: String?,
         val nextDayFirstSlot: LiveLessonSlot?
     ) : LiveScheduleStatus
+
+    data class Holiday(
+        val title: String,
+        val reasonLabel: String,
+        val nextSchoolDayLabel: String?,
+        val nextDayFirstSlot: LiveLessonSlot?
+    ) : LiveScheduleStatus
 }
 
 data class LiveScheduleEvaluation(
@@ -74,6 +82,7 @@ object LiveScheduleTracker {
         teacherAbbr: String,
         teacherFullName: String,
         hiddenSchoolIds: Set<String> = emptySet(),
+        customDaysOff: List<PrincipalDayOff> = emptyList(),
         nowMillis: Long = System.currentTimeMillis(),
         timeZone: TimeZone = TimeZone.getDefault()
     ): LiveScheduleEvaluation {
@@ -165,7 +174,10 @@ object LiveScheduleTracker {
                         dateHeading = dateHeading,
                         lessonPeriod = lesson.period,
                         dayIndex = dayIndex,
-                        todayWeekdayIndex = todayDayIndex
+                        todayWeekdayIndex = todayDayIndex,
+                        lessonClassLabel = lesson.classGroupLabel,
+                        teacherAbbr = teacherAbbr,
+                        teacherFullName = teacherFullName
                     )
                     if (sub != null) {
                         mapped[idx] = sub
@@ -190,14 +202,22 @@ object LiveScheduleTracker {
 
             val activeItems = visibleLessons.mapIndexedNotNull { idx, lesson ->
                 val sub = subMap[idx]
+                val roleMatch = if (userRole == UserRole.TEACHER && sub != null) {
+                    ScheduleFilterMatcher.classifyTeacherSubstitution(sub, teacherAbbr, teacherFullName)
+                } else {
+                    ScheduleFilterMatcher.TeacherSubstitutionMatch.NONE
+                }
                 val isCancelledForUser = if (userRole == UserRole.TEACHER) {
                     sub != null && sub.isCancellation &&
-                        ScheduleFilterMatcher.classifyTeacherSubstitution(sub, teacherAbbr, teacherFullName) ==
-                        ScheduleFilterMatcher.TeacherSubstitutionMatch.REPLACED
+                        roleMatch == ScheduleFilterMatcher.TeacherSubstitutionMatch.REPLACED
                 } else {
                     sub?.isCancellation == true
                 }
-                if (isCancelledForUser) null else LiveLessonItem(lesson = lesson, substitution = sub)
+                if (isCancelledForUser) null else LiveLessonItem(
+                    lesson = lesson,
+                    substitution = sub,
+                    teacherMatch = roleMatch
+                )
             }
 
             val groupedByWindow = linkedMapOf<Pair<Int, Int>, MutableList<LiveLessonItem>>()
@@ -245,19 +265,44 @@ object LiveScheduleTracker {
             return DayBuildResult(slots, cancelledCount, banner)
         }
 
-        fun findNextSchoolDayFirstSlot(fromDayIndex: Int?): Pair<String?, LiveLessonSlot?> {
-            val orderedDays = if (fromDayIndex == null) {
-                (0..4).toList()
-            } else {
-                ((fromDayIndex + 1)..4).toList() + (0..fromDayIndex).toList()
+        fun findNextRealSchoolDayFirstSlot(): Pair<String?, LiveLessonSlot?> {
+            val probe = (cal.clone() as Calendar).apply {
+                set(Calendar.HOUR_OF_DAY, 12)
+                set(Calendar.MINUTE, 0)
+                set(Calendar.SECOND, 0)
+                set(Calendar.MILLISECOND, 0)
             }
-            for (dIdx in orderedDays) {
+            var skippedHolidayOrBreak = false
+            for (offset in 1..14) {
+                probe.add(Calendar.DAY_OF_MONTH, 1)
+                val probeInfo = PolishSchoolCalendar.getDayInfo(probe, customDaysOff, timeZone)
+                if (probeInfo.isFreeFromSchool) {
+                    if (probeInfo.isSpecialNonWeekendFree) {
+                        skippedHolidayOrBreak = true
+                    }
+                    continue
+                }
+                val dIdx = when (probe.get(Calendar.DAY_OF_WEEK)) {
+                    Calendar.MONDAY -> 0
+                    Calendar.TUESDAY -> 1
+                    Calendar.WEDNESDAY -> 2
+                    Calendar.THURSDAY -> 3
+                    Calendar.FRIDAY -> 4
+                    else -> continue
+                }
                 val daySlots = buildSlotsForDay(dIdx, applySubs = false).slots
                 if (daySlots.isNotEmpty()) {
-                    val label = if (fromDayIndex != null && dIdx == fromDayIndex + 1) {
-                        "Jutro (${dayNames[dIdx]})"
-                    } else {
-                        dayNames[dIdx]
+                    val label = when {
+                        offset == 1 && !skippedHolidayOrBreak -> "Jutro (${dayNames[dIdx]})"
+                        skippedHolidayOrBreak -> {
+                            val dateSuffix = PolishSchoolCalendar.formatShortPlDate(
+                                probe.get(Calendar.YEAR),
+                                probe.get(Calendar.MONTH),
+                                probe.get(Calendar.DAY_OF_MONTH)
+                            )
+                            "${dayNames[dIdx]}, $dateSuffix"
+                        }
+                        else -> dayNames[dIdx]
                     }
                     return label to daySlots.first()
                 }
@@ -265,8 +310,24 @@ object LiveScheduleTracker {
             return null to null
         }
 
+        val todayHolidayInfo = PolishSchoolCalendar.getDayInfo(cal, customDaysOff, timeZone)
+        if (todayHolidayInfo.isSpecialNonWeekendFree) {
+            val (nextLabel, nextSlot) = findNextRealSchoolDayFirstSlot()
+            return LiveScheduleEvaluation(
+                status = LiveScheduleStatus.Holiday(
+                    title = todayHolidayInfo.title,
+                    reasonLabel = todayHolidayInfo.description.ifBlank { todayDayName },
+                    nextSchoolDayLabel = nextLabel,
+                    nextDayFirstSlot = nextSlot
+                ),
+                todayDayIndex = null,
+                todayDayName = todayDayName,
+                todaySlots = emptyList()
+            )
+        }
+
         if (todayDayIndex == null) {
-            val (nextLabel, nextSlot) = findNextSchoolDayFirstSlot(null)
+            val (nextLabel, nextSlot) = findNextRealSchoolDayFirstSlot()
             return LiveScheduleEvaluation(
                 status = LiveScheduleStatus.Weekend(
                     nextDayLabel = nextLabel,
@@ -281,7 +342,7 @@ object LiveScheduleTracker {
         val todayBuilt = buildSlotsForDay(todayDayIndex, applySubs = true)
         val todaySlots = todayBuilt.slots
         if (todaySlots.isEmpty()) {
-            val (nextLabel, nextSlot) = findNextSchoolDayFirstSlot(todayDayIndex)
+            val (nextLabel, nextSlot) = findNextRealSchoolDayFirstSlot()
             return LiveScheduleEvaluation(
                 status = LiveScheduleStatus.AfterLessons(
                     nextDayLabel = nextLabel,
@@ -358,7 +419,7 @@ object LiveScheduleTracker {
             }
         }
 
-        val (nextLabel, nextSlot) = findNextSchoolDayFirstSlot(todayDayIndex)
+        val (nextLabel, nextSlot) = findNextRealSchoolDayFirstSlot()
         return LiveScheduleEvaluation(
             status = LiveScheduleStatus.AfterLessons(
                 nextDayLabel = nextLabel,

@@ -920,10 +920,16 @@ class ZsmePortalClient(
     suspend fun downloadApkToCache(
         cacheDir: File,
         candidate: ApkCandidate,
-        onProgress: (Int) -> Unit = {}
+        onProgress: (percent: Int, downloadedBytes: Long, totalBytes: Long) -> Unit = { _, _, _ -> }
     ): Result<File> = withContext(Dispatchers.IO) {
         runCatching {
             val updatesDir = File(cacheDir, "updates").apply { mkdirs() }
+            updatesDir.listFiles()?.forEach { old ->
+                if (old.isFile && old.name.endsWith(".apk", ignoreCase = true)) {
+                    runCatching { old.delete() }
+                }
+            }
+
             val safeName = candidate.fileName
                 .replace(Regex("""[^A-Za-z0-9._-]"""), "_")
                 .let { if (it.endsWith(".apk", ignoreCase = true)) it else "$it.apk" }
@@ -935,17 +941,25 @@ class ZsmePortalClient(
                 .get()
                 .build()
 
+            var finalCopied = 0L
+            var knownTotalBytes = candidate.contentLength.coerceAtLeast(0L)
+
             client.newCall(req).execute().use { resp ->
                 if (!resp.isSuccessful) {
                     error("Błąd pobierania APK: HTTP ${resp.code}")
                 }
                 val body = resp.body ?: error("Pusta odpowiedź serwera podczas pobierania APK")
-                val totalBytes = body.contentLength()
+                val headerTotal = body.contentLength().takeIf { it > 0L } ?: 0L
+                val totalBytes = if (headerTotal > 0L) headerTotal else knownTotalBytes
+                knownTotalBytes = totalBytes
+                onProgress(0, 0L, totalBytes)
+
                 body.byteStream().use { input ->
                     outFile.outputStream().use { output ->
                         val buffer = ByteArray(16 * 1024)
                         var copied = 0L
-                        var lastReported = -1
+                        var lastReportedPct = -1
+                        var lastReportedBytes = 0L
                         while (true) {
                             val read = input.read(buffer)
                             if (read <= 0) break
@@ -953,12 +967,17 @@ class ZsmePortalClient(
                             copied += read
                             if (totalBytes > 0L) {
                                 val pct = ((copied * 100L) / totalBytes).toInt().coerceIn(0, 100)
-                                if (pct != lastReported) {
-                                    lastReported = pct
-                                    onProgress(pct)
+                                if (pct != lastReportedPct || copied - lastReportedBytes >= 256 * 1024L) {
+                                    lastReportedPct = pct
+                                    lastReportedBytes = copied
+                                    onProgress(pct, copied, totalBytes)
                                 }
+                            } else if (copied - lastReportedBytes >= 128 * 1024L) {
+                                lastReportedBytes = copied
+                                onProgress(0, copied, 0L)
                             }
                         }
+                        finalCopied = copied
                     }
                 }
             }
@@ -974,7 +993,8 @@ class ZsmePortalClient(
                 error("Pobrany plik nie jest prawidłowym instalatorem APK.")
             }
 
-            onProgress(100)
+            val resolvedTotal = maxOf(finalCopied, knownTotalBytes, outFile.length())
+            onProgress(100, outFile.length(), resolvedTotal)
             outFile
         }
     }

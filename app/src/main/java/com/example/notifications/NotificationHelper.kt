@@ -74,23 +74,41 @@ object NotificationHelper {
         className: String,
         groupLabel: String,
         items: List<SubstitutionItem>,
-        dateHeading: String
+        dateHeading: String,
+        teacherAbbr: String = "",
+        teacherFullName: String = ""
     ) {
         if (!hasNotificationPermission(context)) return
         createNotificationChannel(context)
 
+        val isTeacherMode = teacherAbbr.isNotBlank() || teacherFullName.isNotBlank()
         val title = "Nowe zastępstwa • $className ($groupLabel)"
         val lines = items.take(6).map { item ->
             val periodPart = if (item.period.isNotBlank()) "Lek. ${item.period}" else "Zmiana"
-            val subjPart = item.subject.ifBlank { "Zajęcia" }
-            val actionPart = when {
-                item.isCancellation -> "ODWOŁANE"
-                item.substituteTeacher.isNotBlank() -> "zast. ${item.substituteTeacher}"
-                item.note.isNotBlank() -> item.note
-                else -> "sprawdź szczegóły"
+            val subjPart = item.subject.ifBlank { if (com.example.data.model.ScheduleFilterMatcher.isDutyItem(item)) "Dyżur" else "Zajęcia" }
+            val actionPart = if (isTeacherMode) {
+                when (com.example.data.model.ScheduleFilterMatcher.classifyTeacherSubstitution(item, teacherAbbr, teacherFullName)) {
+                    com.example.data.model.ScheduleFilterMatcher.TeacherSubstitutionMatch.CONDUCTING ->
+                        if (item.absentTeacher.isNotBlank()) "PROWADZISZ (za ${item.absentTeacher})" else "PROWADZISZ"
+                    com.example.data.model.ScheduleFilterMatcher.TeacherSubstitutionMatch.REPLACED ->
+                        when {
+                            item.isCancellation -> "ODWOŁANE (za Ciebie)"
+                            item.substituteTeacher.isNotBlank() -> "ZA CIEBIE (zast. ${item.substituteTeacher})"
+                            else -> "ZA CIEBIE"
+                        }
+                    else -> if (item.isCancellation) "ODWOŁANE" else item.substituteTeacher.ifBlank { item.note }.ifBlank { "sprawdź" }
+                }
+            } else {
+                when {
+                    item.isCancellation -> "ODWOŁANE"
+                    item.substituteTeacher.isNotBlank() -> "zast. ${item.substituteTeacher}"
+                    item.note.isNotBlank() -> item.note
+                    else -> "sprawdź szczegóły"
+                }
             }
+            val classPrefix = if (isTeacherMode && item.className.isNotBlank()) "${item.className} • " else ""
             val roomPart = if (item.room.isNotBlank()) " (s. ${item.room})" else ""
-            "$periodPart: $subjPart — $actionPart$roomPart"
+            "$periodPart: $classPrefix$subjPart — $actionPart$roomPart"
         }
         val summary = buildString {
             if (dateHeading.isNotBlank()) appendLine(dateHeading)

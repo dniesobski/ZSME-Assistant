@@ -10,6 +10,8 @@ import com.example.data.model.ApkCandidate
 import com.example.data.model.AppUpdateCheckResult
 import com.example.data.model.AppVersionHelper
 import com.example.data.model.ClassTimetable
+import com.example.data.model.PolishSchoolCalendar
+import com.example.data.model.PrincipalDayOff
 import com.example.data.model.ScheduleFilterMatcher
 import com.example.data.model.SchoolClass
 import com.example.data.model.StudentGroup
@@ -51,11 +53,16 @@ enum class SubstitutionsFilterTab(val label: String) {
 data class AppUpdateUiState(
     val isChecking: Boolean = false,
     val isDownloading: Boolean = false,
+    val isInstalling: Boolean = false,
     val downloadProgress: Int = 0,
+    val downloadedBytes: Long = 0L,
+    val totalBytes: Long = 0L,
     val checkResult: AppUpdateCheckResult? = null,
     val pendingInstallApkPath: String? = null,
     val downloadedApkPath: String? = null,
     val isStartupUpdateDialogVisible: Boolean = false,
+    val isUpdateProgressDialogVisible: Boolean = false,
+    val installStatusMessage: String? = null,
     val errorMessage: String? = null
 )
 
@@ -1027,21 +1034,28 @@ class ZsmeViewModel(application: Application) : AndroidViewModel(application) {
         appUpdateFlow.update { it.copy(isStartupUpdateDialogVisible = false) }
     }
 
+    fun dismissUpdateProgressDialog() {
+        appUpdateFlow.update { it.copy(isUpdateProgressDialogVisible = false) }
+    }
+
     fun acceptStartupAppUpdate() {
         val state = appUpdateFlow.value
-        appUpdateFlow.update { it.copy(isStartupUpdateDialogVisible = false) }
+        appUpdateFlow.update {
+            it.copy(
+                isStartupUpdateDialogVisible = false,
+                isUpdateProgressDialogVisible = true,
+                errorMessage = null
+            )
+        }
         val downloaded = state.downloadedApkPath
-        if (!downloaded.isNullOrBlank()) {
+        if (!downloaded.isNullOrBlank() && java.io.File(downloaded).exists()) {
             installDownloadedApk()
             return
         }
         val candidate = state.checkResult?.candidate
         if (candidate != null) {
-            if (state.isChecking || state.isDownloading) return
+            if (state.isChecking || state.isDownloading || state.isInstalling) return
             viewModelScope.launch {
-                transientFlags.update {
-                    it.copy(snackbarMessage = "Pobieranie pliku ${candidate.fileName}...")
-                }
                 downloadAndPrepareUpdate(candidate)
             }
         } else {
@@ -1050,7 +1064,7 @@ class ZsmeViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun checkForAppUpdate(repoUrl: String? = null, forceDownload: Boolean = false) {
-        if (appUpdateFlow.value.isChecking || appUpdateFlow.value.isDownloading) return
+        if (appUpdateFlow.value.isChecking || appUpdateFlow.value.isDownloading || appUpdateFlow.value.isInstalling) return
         viewModelScope.launch {
             val rawCandidate = repoUrl?.trim()?.takeIf { it.isNotBlank() }
                 ?: uiState.value.preferences.appUpdateUrl.trim()
@@ -1070,7 +1084,11 @@ class ZsmeViewModel(application: Application) : AndroidViewModel(application) {
                 it.copy(
                     isChecking = true,
                     errorMessage = null,
-                    downloadProgress = 0
+                    installStatusMessage = null,
+                    downloadProgress = 0,
+                    downloadedBytes = 0L,
+                    totalBytes = 0L,
+                    isUpdateProgressDialogVisible = forceDownload
                 )
             }
             val result = repository.checkAppUpdate(effectiveUrl)
@@ -1084,13 +1102,16 @@ class ZsmeViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 val candidate = checkResult.candidate
                 if (candidate != null && (checkResult.updateAvailable || forceDownload)) {
-                    transientFlags.update {
-                        it.copy(snackbarMessage = "Pobieranie pliku ${candidate.fileName}...")
+                    appUpdateFlow.update {
+                        it.copy(isUpdateProgressDialogVisible = true)
                     }
                     downloadAndPrepareUpdate(candidate)
                 } else {
                     if (candidate != null && uiState.value.preferences.lastApkUrl.isBlank()) {
                         repository.rememberCurrentApkMetadata(candidate)
+                    }
+                    appUpdateFlow.update {
+                        it.copy(isUpdateProgressDialogVisible = false)
                     }
                     transientFlags.update {
                         it.copy(
@@ -1119,20 +1140,34 @@ class ZsmeViewModel(application: Application) : AndroidViewModel(application) {
         appUpdateFlow.update {
             it.copy(
                 isDownloading = true,
+                isInstalling = false,
                 downloadProgress = 0,
-                errorMessage = null
+                downloadedBytes = 0L,
+                totalBytes = candidate.contentLength.coerceAtLeast(0L),
+                installStatusMessage = "Pobieranie pliku ${candidate.fileName}...",
+                errorMessage = null,
+                isUpdateProgressDialogVisible = true
             )
         }
-        val downloadRes = repository.downloadAppUpdate(candidate) { progress ->
-            appUpdateFlow.update { it.copy(downloadProgress = progress) }
+        val downloadRes = repository.downloadAppUpdate(candidate) { progress, downloaded, total ->
+            appUpdateFlow.update {
+                it.copy(
+                    downloadProgress = progress,
+                    downloadedBytes = downloaded,
+                    totalBytes = if (total > 0L) total else it.totalBytes
+                )
+            }
         }
         downloadRes.onSuccess { file ->
             appUpdateFlow.update {
                 it.copy(
                     isDownloading = false,
                     downloadProgress = 100,
+                    downloadedBytes = file.length(),
+                    totalBytes = maxOf(file.length(), it.totalBytes),
                     downloadedApkPath = file.absolutePath,
                     pendingInstallApkPath = file.absolutePath,
+                    installStatusMessage = "Pobrano! Uruchamiam instalację w aplikacji...",
                     errorMessage = null
                 )
             }
@@ -1141,6 +1176,8 @@ class ZsmeViewModel(application: Application) : AndroidViewModel(application) {
             appUpdateFlow.update {
                 it.copy(
                     isDownloading = false,
+                    isInstalling = false,
+                    installStatusMessage = null,
                     errorMessage = msg
                 )
             }
@@ -1150,11 +1187,83 @@ class ZsmeViewModel(application: Application) : AndroidViewModel(application) {
 
     fun installDownloadedApk() {
         val path = appUpdateFlow.value.downloadedApkPath ?: return
-        appUpdateFlow.update { it.copy(pendingInstallApkPath = path) }
+        appUpdateFlow.update {
+            it.copy(
+                pendingInstallApkPath = path,
+                isUpdateProgressDialogVisible = true,
+                errorMessage = null,
+                installStatusMessage = "Przygotowywanie pakietu do instalacji..."
+            )
+        }
     }
 
     fun consumePendingApkInstall() {
         appUpdateFlow.update { it.copy(pendingInstallApkPath = null) }
+    }
+
+    fun markUpdateInstalling(installing: Boolean, statusMessage: String? = null) {
+        appUpdateFlow.update {
+            it.copy(
+                isInstalling = installing,
+                installStatusMessage = statusMessage ?: it.installStatusMessage
+            )
+        }
+    }
+
+    fun onInstallSessionSucceeded() {
+        appUpdateFlow.update {
+            it.copy(
+                isInstalling = false,
+                isUpdateProgressDialogVisible = false,
+                installStatusMessage = "Zaktualizowano pomyślnie!",
+                errorMessage = null
+            )
+        }
+        transientFlags.update {
+            it.copy(snackbarMessage = "Aktualizacja aplikacji została zainstalowana.")
+        }
+    }
+
+    fun onInstallSessionFailed(message: String) {
+        appUpdateFlow.update {
+            it.copy(
+                isInstalling = false,
+                installStatusMessage = null,
+                errorMessage = message
+            )
+        }
+        transientFlags.update { it.copy(snackbarMessage = message) }
+    }
+
+    // --- Principal Days Off / Polish School Calendar actions ---
+
+    fun addPrincipalDaysOff(startIso: String, dayCount: Int, title: String) {
+        val items = PolishSchoolCalendar.expandPrincipalDateRange(startIso, dayCount, title)
+        if (items.isEmpty()) return
+        viewModelScope.launch {
+            prefsRepo.addPrincipalDaysOff(
+                datesIso = items.map { it.dateIso },
+                title = items.first().title
+            )
+            transientFlags.update {
+                it.copy(
+                    snackbarMessage = if (items.size == 1) {
+                        "Dodano dzień wolny: ${items.first().title} (${items.first().dateIso})"
+                    } else {
+                        "Dodano ${items.size} dni dyrektorskich: ${items.first().title}"
+                    }
+                )
+            }
+        }
+    }
+
+    fun removePrincipalDayOff(dateIso: String) {
+        viewModelScope.launch {
+            prefsRepo.removePrincipalDayOff(dateIso)
+            transientFlags.update {
+                it.copy(snackbarMessage = "Usunięto dzień dyrektorski ($dateIso)")
+            }
+        }
     }
 
     fun setDayIndex(index: Int) {

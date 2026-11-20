@@ -187,7 +187,9 @@ class ZsmeRepository(
                         className = notifTarget,
                         groupLabel = notifRoleLabel,
                         items = matching,
-                        dateHeading = snapshot.dateHeading
+                        dateHeading = snapshot.dateHeading,
+                        teacherAbbr = if (isTeacherActive) prefs.teacherAbbreviation else "",
+                        teacherFullName = if (isTeacherActive) prefs.teacherFullName else ""
                     )
                     preferencesRepository.appendNotificationLog(
                         NotificationLogEntry(
@@ -291,7 +293,7 @@ class ZsmeRepository(
 
     suspend fun downloadAppUpdate(
         candidate: ApkCandidate,
-        onProgress: (Int) -> Unit
+        onProgress: (percent: Int, downloadedBytes: Long, totalBytes: Long) -> Unit
     ): Result<java.io.File> {
         val res = portalClient.downloadApkToCache(
             cacheDir = context.cacheDir,

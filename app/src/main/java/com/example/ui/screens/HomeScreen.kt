@@ -24,7 +24,10 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
+import androidx.compose.material.icons.filled.BeachAccess
+import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.CalendarViewWeek
+import androidx.compose.material.icons.filled.Celebration
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Coffee
 import androidx.compose.material.icons.filled.NotificationsActive
@@ -39,6 +42,7 @@ import androidx.compose.material.icons.filled.Weekend
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -72,11 +76,13 @@ import androidx.compose.ui.unit.dp
 import coil.compose.SubcomposeAsyncImage
 import coil.request.ImageRequest
 import com.example.data.model.AppVersionHelper
+import com.example.data.model.HomeHolidayCountdowns
 import com.example.data.model.LiveLessonItem
 import com.example.data.model.LiveLessonSlot
 import com.example.data.model.LiveScheduleEvaluation
 import com.example.data.model.LiveScheduleStatus
 import com.example.data.model.LiveScheduleTracker
+import com.example.data.model.PolishSchoolCalendar
 import com.example.data.model.UserRole
 import com.example.ui.ZsmeUiState
 import com.example.ui.components.ClassAndGroupPill
@@ -85,6 +91,7 @@ import com.example.ui.components.TeacherProfilePill
 import com.example.ui.components.ZsmeHeroOnboardingCard
 import com.example.ui.theme.SchoolColorPalette
 import kotlinx.coroutines.delay
+import java.util.Locale
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -95,6 +102,7 @@ fun HomeScreen(
     onOpenTeacherSetup: () -> Unit,
     onOpenTimetable: () -> Unit,
     onOpenSubstitutions: () -> Unit,
+    onOpenSchoolCalendar: () -> Unit,
     onStartAppUpdateDownload: () -> Unit,
     onInstallDownloadedApk: () -> Unit,
     modifier: Modifier = Modifier
@@ -129,6 +137,17 @@ fun HomeScreen(
             customGroupFilter = prefs.customGroupFilter,
             teacherAbbr = prefs.teacherAbbreviation,
             teacherFullName = prefs.teacherFullName,
+            customDaysOff = prefs.principalDaysOff,
+            nowMillis = nowMillis
+        )
+    }
+
+    val holidayCountdowns: HomeHolidayCountdowns = remember(
+        prefs.principalDaysOff,
+        nowMillis / 60_000L
+    ) {
+        PolishSchoolCalendar.evaluateHomeCountdowns(
+            customDaysOff = prefs.principalDaysOff,
             nowMillis = nowMillis
         )
     }
@@ -167,8 +186,12 @@ fun HomeScreen(
                         versionLabel = availableUpdate.candidate?.versionName.orEmpty(),
                         fileName = availableUpdate.candidate?.fileName.orEmpty(),
                         isDownloading = updateState.isDownloading,
+                        isInstalling = updateState.isInstalling,
                         downloadProgress = updateState.downloadProgress,
+                        downloadedBytes = updateState.downloadedBytes,
+                        totalBytes = updateState.totalBytes,
                         downloadedApkPath = updateState.downloadedApkPath,
+                        installStatusMessage = updateState.installStatusMessage,
                         onDownloadAndInstall = onStartAppUpdateDownload,
                         onInstallDownloaded = onInstallDownloadedApk
                     )
@@ -281,6 +304,22 @@ fun HomeScreen(
                         }
                     }
                 }
+
+                is LiveScheduleStatus.Holiday -> {
+                    item(key = "home_holiday") {
+                        HolidayHeroCard(status = status)
+                    }
+                    if (status.nextDayFirstSlot != null) {
+                        item(key = "home_next_school_lesson_after_holiday") {
+                            NextLessonCard(
+                                heading = "Powrót do szkoły • ${status.nextSchoolDayLabel.orEmpty()}",
+                                subtitle = "Lekcja ${status.nextDayFirstSlot.period} • ${status.nextDayFirstSlot.timeRangeLabel}",
+                                slot = status.nextDayFirstSlot,
+                                showSchoolBadge = showMultiSchoolColors
+                            )
+                        }
+                    }
+                }
             }
 
             if (evaluation.substitutionBanner != null || uiState.myGroupSubstitutions.isNotEmpty()) {
@@ -291,6 +330,14 @@ fun HomeScreen(
                         onOpenSubstitutions = onOpenSubstitutions
                     )
                 }
+            }
+
+            item(key = "home_holiday_countdowns") {
+                HomeCountdownsCard(
+                    countdowns = holidayCountdowns,
+                    principalDaysCount = prefs.principalDaysOff.size,
+                    onOpenSchoolCalendar = onOpenSchoolCalendar
+                )
             }
 
             if (evaluation.todaySlots.isNotEmpty()) {
@@ -469,8 +516,12 @@ private fun HomeUpdateBannerCard(
     versionLabel: String,
     fileName: String,
     isDownloading: Boolean,
+    isInstalling: Boolean,
     downloadProgress: Int,
+    downloadedBytes: Long,
+    totalBytes: Long,
     downloadedApkPath: String?,
+    installStatusMessage: String?,
     onDownloadAndInstall: () -> Unit,
     onInstallDownloaded: () -> Unit
 ) {
@@ -507,31 +558,268 @@ private fun HomeUpdateBannerCard(
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.onPrimaryContainer
                     )
+                    val subtitle = when {
+                        isDownloading && totalBytes > 0L -> String.format(
+                            Locale.US,
+                            "Pobieranie w aplikacji: %.1f / %.1f MB (%d%%)",
+                            downloadedBytes / (1024f * 1024f),
+                            totalBytes / (1024f * 1024f),
+                            downloadProgress
+                        )
+                        isDownloading -> String.format(
+                            Locale.US,
+                            "Pobieranie w aplikacji: %.1f MB...",
+                            downloadedBytes / (1024f * 1024f)
+                        )
+                        isInstalling -> installStatusMessage ?: "Instalowanie aktualizacji..."
+                        else -> "Dostępna jest aktualizacja pliku $fileName."
+                    }
                     Text(
-                        text = if (isDownloading) {
-                            "Pobieranie aktualizacji: $downloadProgress%"
-                        } else {
-                            "Dostępna jest aktualizacja pliku $fileName."
-                        },
+                        text = subtitle,
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.85f)
                     )
                 }
             }
-            if (isDownloading) {
-                LinearProgressIndicator(
-                    progress = { downloadProgress.coerceIn(0, 100) / 100f },
-                    modifier = Modifier.fillMaxWidth()
+            when {
+                isDownloading -> {
+                    LinearProgressIndicator(
+                        progress = { downloadProgress.coerceIn(0, 100) / 100f },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+
+                isInstalling -> {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                        Text(
+                            text = "Trwa instalacja aktualizacji w aplikacji...",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                }
+
+                else -> {
+                    Button(
+                        onClick = if (downloadedApkPath != null) onInstallDownloaded else onDownloadAndInstall,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .minimumInteractiveComponentSize()
+                            .testTag("home_install_update_button")
+                    ) {
+                        Text(if (downloadedApkPath != null) "Zainstaluj w aplikacji" else "Pobierz i zaktualizuj w aplikacji")
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun HolidayHeroCard(status: LiveScheduleStatus.Holiday) {
+    Card(
+        shape = RoundedCornerShape(24.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("home_live_status_card")
+    ) {
+        Row(
+            modifier = Modifier.padding(20.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            Surface(
+                shape = CircleShape,
+                color = MaterialTheme.colorScheme.primary,
+                contentColor = MaterialTheme.colorScheme.onPrimary,
+                modifier = Modifier.size(48.dp)
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        imageVector = Icons.Filled.Celebration,
+                        contentDescription = null
+                    )
+                }
+            }
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(
+                    text = "Dzień wolny • ${status.title}",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer
                 )
-            } else {
-                Button(
-                    onClick = if (downloadedApkPath != null) onInstallDownloaded else onDownloadAndInstall,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .minimumInteractiveComponentSize()
-                        .testTag("home_install_update_button")
+                Text(
+                    text = "${status.reasonLabel} — brak zajęć dydaktycznych.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.85f)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun HomeCountdownsCard(
+    countdowns: HomeHolidayCountdowns,
+    principalDaysCount: Int,
+    onOpenSchoolCalendar: () -> Unit
+) {
+    Card(
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surface
+        ),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f)),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("home_holiday_countdowns_card")
+    ) {
+        Column(
+            modifier = Modifier.padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Text(if (downloadedApkPath != null) "Zainstaluj pobraną aktualizację" else "Pobierz i zaktualizuj teraz")
+                    Icon(
+                        imageVector = Icons.Filled.CalendarMonth,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Text(
+                        text = "Odliczanie do wolnego",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+                TextButton(
+                    onClick = onOpenSchoolCalendar,
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                    modifier = Modifier
+                        .minimumInteractiveComponentSize()
+                        .testTag("home_open_school_calendar_button")
+                ) {
+                    Text(
+                        text = if (principalDaysCount > 0) "Kalendarz ($principalDaysCount)" else "Kalendarz i dni dyr."
+                    )
+                }
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Surface(
+                    onClick = onOpenSchoolCalendar,
+                    shape = RoundedCornerShape(16.dp),
+                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f),
+                    modifier = Modifier
+                        .weight(1f)
+                        .minimumInteractiveComponentSize()
+                        .testTag("countdown_next_day_off_tile")
+                ) {
+                    Column(
+                        modifier = Modifier.padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(5.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.Celebration,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(15.dp)
+                            )
+                            Text(
+                                text = "Najbliższe wolne",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f)
+                            )
+                        }
+                        Text(
+                            text = if (countdowns.isTodayFree) "Dziś wolne!" else PolishSchoolCalendar.formatDaysPl(countdowns.nextFreeDayDays),
+                            style = MaterialTheme.typography.headlineSmall.copy(
+                                fontWeight = FontWeight.ExtraBold,
+                                fontFeatureSettings = "tnum"
+                            ),
+                            color = MaterialTheme.colorScheme.onPrimaryContainer
+                        )
+                        Text(
+                            text = "${countdowns.nextFreeDayTitle} (${countdowns.nextFreeDayDateLabel})",
+                            style = MaterialTheme.typography.bodySmall,
+                            fontWeight = FontWeight.Medium,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+
+                Surface(
+                    onClick = onOpenSchoolCalendar,
+                    shape = RoundedCornerShape(16.dp),
+                    color = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.55f),
+                    modifier = Modifier
+                        .weight(1f)
+                        .minimumInteractiveComponentSize()
+                        .testTag("countdown_vacation_tile")
+                ) {
+                    Column(
+                        modifier = Modifier.padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(5.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.BeachAccess,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.tertiary,
+                                modifier = Modifier.size(15.dp)
+                            )
+                            Text(
+                                text = if (countdowns.isCurrentlySummerBreak) "Wakacje!" else "Do wakacji",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onTertiaryContainer.copy(alpha = 0.8f)
+                            )
+                        }
+                        Text(
+                            text = PolishSchoolCalendar.formatDaysPl(countdowns.daysToVacation),
+                            style = MaterialTheme.typography.headlineSmall.copy(
+                                fontWeight = FontWeight.ExtraBold,
+                                fontFeatureSettings = "tnum"
+                            ),
+                            color = MaterialTheme.colorScheme.onTertiaryContainer
+                        )
+                        Text(
+                            text = if (countdowns.isCurrentlySummerBreak) {
+                                "Do szkoły: ${countdowns.vacationTargetDateLabel}"
+                            } else {
+                                "Start: ${countdowns.vacationTargetDateLabel}"
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            fontWeight = FontWeight.Medium,
+                            color = MaterialTheme.colorScheme.onTertiaryContainer,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
                 }
             }
         }
@@ -1057,10 +1345,26 @@ private fun SlotItemsBlock(
                             tint = MaterialTheme.colorScheme.tertiary,
                             modifier = Modifier.size(16.dp)
                         )
-                        val detail = listOf(
-                            sub.substituteTeacher.takeIf { it.isNotBlank() }?.let { "Zastępstwo: $it" },
+                        val subHeading = when (item.teacherMatch) {
+                            com.example.data.model.ScheduleFilterMatcher.TeacherSubstitutionMatch.CONDUCTING -> {
+                                val target = listOfNotNull(
+                                    sub.absentTeacher.takeIf { it.isNotBlank() }?.let { "za $it" },
+                                    sub.className.takeIf { it.isNotBlank() }?.let { "kl. $it" }
+                                ).joinToString(" • ")
+                                if (target.isNotBlank()) "Prowadzisz ($target)" else "Prowadzisz zastępstwo"
+                            }
+                            com.example.data.model.ScheduleFilterMatcher.TeacherSubstitutionMatch.REPLACED -> {
+                                sub.substituteTeacher.takeIf { it.isNotBlank() }?.let { "Za Ciebie: $it" }
+                                    ?: "Zastępstwo za Ciebie"
+                            }
+                            com.example.data.model.ScheduleFilterMatcher.TeacherSubstitutionMatch.NONE -> {
+                                sub.substituteTeacher.takeIf { it.isNotBlank() }?.let { "Zastępstwo: $it" }
+                            }
+                        }
+                        val detail = listOfNotNull(
+                            subHeading,
                             sub.note.takeIf { it.isNotBlank() }
-                        ).filterNotNull().joinToString(" • ").ifBlank { "Zastępstwo" }
+                        ).joinToString(" • ").ifBlank { "Zastępstwo" }
                         Text(
                             text = detail,
                             style = MaterialTheme.typography.labelMedium,

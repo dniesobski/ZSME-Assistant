@@ -663,9 +663,21 @@ fun TimetableScreen(
                                     dateHeading = uiState.substitutions?.dateHeading.orEmpty(),
                                     lessonPeriod = lesson.period,
                                     dayIndex = effectiveDayIndex,
-                                    todayWeekdayIndex = todayWeekdayIndex
+                                    todayWeekdayIndex = todayWeekdayIndex,
+                                    lessonClassLabel = lesson.classGroupLabel,
+                                    teacherAbbr = prefs.teacherAbbreviation,
+                                    teacherFullName = prefs.teacherFullName
                                 )
                             else -> null
+                        }
+                        val teacherSubRole = if (isTeacherMode && matchingSub != null) {
+                            ScheduleFilterMatcher.classifyTeacherSubstitution(
+                                item = matchingSub,
+                                teacherAbbr = prefs.teacherAbbreviation,
+                                teacherFullName = prefs.teacherFullName
+                            )
+                        } else {
+                            ScheduleFilterMatcher.TeacherSubstitutionMatch.NONE
                         }
 
                         val isCurrentNow = isViewingToday && isLessonActiveNow(lesson.timeRange)
@@ -675,7 +687,8 @@ fun TimetableScreen(
                             isCurrentNow = isCurrentNow,
                             hideTeacherName = isStudentTeacherView,
                             showSchoolHighlight = isTeacherMode && (showMultiSchoolColors || lesson.schoolColorIndex > 0),
-                            matchingSubstitution = matchingSub
+                            matchingSubstitution = matchingSub,
+                            teacherSubstitutionMatch = teacherSubRole
                         )
                     }
                 }
@@ -1493,9 +1506,11 @@ private fun LessonTimelineCard(
     isCurrentNow: Boolean,
     hideTeacherName: Boolean = false,
     showSchoolHighlight: Boolean = false,
-    matchingSubstitution: SubstitutionItem?
+    matchingSubstitution: SubstitutionItem?,
+    teacherSubstitutionMatch: ScheduleFilterMatcher.TeacherSubstitutionMatch = ScheduleFilterMatcher.TeacherSubstitutionMatch.NONE
 ) {
-    val isCancelled = matchingSubstitution?.isCancellation == true
+    val isConductingTeacherSub = teacherSubstitutionMatch == ScheduleFilterMatcher.TeacherSubstitutionMatch.CONDUCTING
+    val isCancelled = matchingSubstitution?.isCancellation == true && !isConductingTeacherSub
     val strikeDecoration = if (isCancelled) TextDecoration.LineThrough else TextDecoration.None
     val effectiveCurrentNow = isCurrentNow && !isCancelled
 
@@ -1797,9 +1812,17 @@ private fun LessonTimelineCard(
                         val showAbsentTeacher = absentInfo.isNotBlank() &&
                             !detailText.contains(absentInfo, ignoreCase = true)
                         val alertText = buildString {
-                            append(if (isCancelled) "ODWOŁANE" else "ZASTĘPSTWO")
+                            when {
+                                isConductingTeacherSub -> append("PROWADZISZ")
+                                isCancelled -> append("ODWOŁANE")
+                                teacherSubstitutionMatch == ScheduleFilterMatcher.TeacherSubstitutionMatch.REPLACED -> append("ZA CIEBIE")
+                                else -> append("ZASTĘPSTWO")
+                            }
                             if (showAbsentTeacher) {
                                 append(" (za $absentInfo)")
+                            }
+                            if (matchingSubstitution.className.isNotBlank() && isConductingTeacherSub) {
+                                append(" • kl. ${matchingSubstitution.className}")
                             }
                             if (detailText.isNotBlank()) {
                                 append(": ")
